@@ -7,6 +7,7 @@ from gw170817.simulation.event_timeline import EventTimeline, MessengerEvent, Ev
 from gw170817.simulation.engine import GW170817Simulation, SimulationState
 from gw170817.simulation.multimessenger import MultiMessengerCoordinator, MultiMessengerEventState
 from gw170817.simulation.demo_scenario import DemoScenario
+from gw170817.simulation.demo_director import DemoDirector, DemoStage
 
 __all__ = [
     "initialize_taichi",
@@ -19,5 +20,7 @@ __all__ = [
     "SimulationState",
     "MultiMessengerCoordinator",
     "MultiMessengerEventState",
-    "DemoScenario"
+    "DemoScenario",
+    "DemoDirector",
+    "DemoStage"
 ]
