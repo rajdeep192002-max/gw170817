@@ -1,10 +1,12 @@
-﻿"""
-Simulation sub-package for GW170817 particle system, backend management, merger dynamics, event timeline, and integrated simulation engine.
+"""
+Simulation sub-package for GW170817 particle system, backend management, merger dynamics, event timeline, integrated engine, and multi-messenger coordinator.
 """
 from gw170817.simulation.particles import initialize_taichi, ParticleSystem
 from gw170817.simulation.merger_dynamics import MergerDynamics
 from gw170817.simulation.event_timeline import EventTimeline, MessengerEvent, EventPhase
 from gw170817.simulation.engine import GW170817Simulation, SimulationState
+from gw170817.simulation.multimessenger import MultiMessengerCoordinator, MultiMessengerEventState
+from gw170817.simulation.demo_scenario import DemoScenario
 
 __all__ = [
     "initialize_taichi",
@@ -14,5 +16,8 @@ __all__ = [
     "MessengerEvent",
     "EventPhase",
     "GW170817Simulation",
-    "SimulationState"
+    "SimulationState",
+    "MultiMessengerCoordinator",
+    "MultiMessengerEventState",
+    "DemoScenario"
 ]
