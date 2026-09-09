@@ -1,4 +1,4 @@
-﻿"""
+"""
 Simulation configuration for GW170817 reduced-order model.
 Contains system parameters, timesteps, particle counts, quality levels, and backend settings.
 """
@@ -75,6 +75,11 @@ class SimConfig:
             "HIGH": self.HIGH_PARTICLES,
         }
         return mapping.get(self.mode.upper(), self.DEV_PARTICLES)
+
+    @property
+    def n_particles(self) -> int:
+        """Alias for particle_count."""
+        return self.particle_count
 
     @property
     def initial_separation(self) -> float:
