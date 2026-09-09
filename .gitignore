@@ -1,4 +1,21 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Virtual Environment
+Include/
+Lib/
+Scripts/
+bin/
+share/
+pyvenv.cfg
+
+# Taichi & Vulkan / SPIR-V generated tool binaries & config
+SPIRV-Tools*
+imgui.ini
+
+# Temporary notebooks, archives, and temporary tools
+*.ipynb
+*.zip
+tools/
