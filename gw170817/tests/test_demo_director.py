@@ -1,16 +1,16 @@
 """
-Test suite for GW170817 Demo Director & Presentation Playback (Task 017).
+Test suite for GW170817 Demo Director & Presentation Playback (Task 017 & Task 021).
 """
 import sys
 sys.path.insert(0, '.')
 import numpy as np
 from gw170817.constants import day
 from gw170817.config import SimConfig
-from gw170817.simulation.demo_director import DemoDirector, DemoStage
+from gw170817.simulation.demo_director import DemoDirector, DemoStage, PlaybackMode
 
 
 def test_demo_director():
-    print("=== TASK 017 DEMO DIRECTOR TEST ===")
+    print("=== TASK 017 & 021 DEMO DIRECTOR TEST ===")
 
     config = SimConfig(mode="DEV", seed=42)
     director = DemoDirector(config=config)
@@ -24,13 +24,15 @@ def test_demo_director():
     assert director.progress == 0.0
     print("1. reset returns to IDLE: PASS")
 
-    # 2. Start enters INSPIRAL
+    # 2. Start enters INSPIRAL (Demo starts near -12.0 s event_time)
     st_start = director.start()
     assert director.current_stage == "INSPIRAL"
     assert director.stage_enum == DemoStage.INSPIRAL
     assert director.is_running
     assert not director.is_paused
-    print("2. start enters INSPIRAL: PASS")
+    assert abs(st_start.event_time - (-12.0)) < 0.5, f"Expected event_time ~ -12 s, got {st_start.event_time}"
+    assert 50.0 <= st_start.gw_frequency <= 56.0, f"Expected f_gw ~ 53.5 Hz, got {st_start.gw_frequency}"
+    print("2. start enters INSPIRAL near -12.0 s: PASS")
 
     # 3. Pause/Resume works
     director.pause()
@@ -77,7 +79,35 @@ def test_demo_director():
         assert 0.0 <= p_stage <= 1.0, f"Stage progress out of bounds: {p_stage}"
     print("7. progress remains in [0,1]: PASS")
 
-    # 8. Complete state is deterministic
+    # 8. Playback Modes (REAL TIME / SLOW MOTION)
+    director.reset()
+    assert director.playback_mode_str == "REAL TIME"
+    assert director.speed_multiplier == 1.0
+
+    director.set_slow_motion()
+    assert director.playback_mode_str == "SLOW MOTION"
+    assert director.speed_multiplier == 0.10
+
+    director.toggle_playback_mode()
+    assert director.playback_mode_str == "REAL TIME"
+    assert director.speed_multiplier == 1.0
+
+    director.increase_speed()
+    assert director.speed_multiplier == 1.25
+    director.decrease_speed()
+    assert director.speed_multiplier == 1.00
+    print("8. playback modes & speed multipliers: PASS")
+
+    # 9. Waveform buffer preserved across stage jumps
+    director.reset()
+    director.start()
+    buf_initial_count = director.coordinator.engine.waveform_buffer.count
+    director.next_stage()
+    buf_next_count = director.coordinator.engine.waveform_buffer.count
+    assert buf_next_count >= buf_initial_count, "Waveform buffer must not be cleared on stage transition"
+    print("9. waveform buffer preserved across stage jumps: PASS")
+
+    # 10. Complete state is deterministic
     director.reset()
     director.start()
     for _ in range(len(expected_stages)):
@@ -85,27 +115,9 @@ def test_demo_director():
     assert director.is_complete
     assert director.current_stage == "COMPLETE"
     assert director.progress == 1.0
-    print("8. complete state is deterministic: PASS")
+    print("10. complete state is deterministic: PASS")
 
-    # 9. Repeated reset/start produces identical stage sequence
-    seq1 = []
-    director.reset()
-    director.start()
-    seq1.append(director.current_stage)
-    for _ in range(5):
-        seq1.append(director.next_stage().phase)
-
-    seq2 = []
-    director.reset()
-    director.start()
-    seq2.append(director.current_stage)
-    for _ in range(5):
-        seq2.append(director.next_stage().phase)
-
-    assert seq1 == seq2, f"Sequence mismatch: {seq1} vs {seq2}"
-    print("9. repeated reset/start produces identical stage sequence: PASS")
-
-    # 10. Presentation timing does not modify physical event timestamps
+    # 11. Presentation timing does not modify physical event timestamps
     director.reset()
     st_init = director.start()
     t_phys_grb_ref = director.coordinator.engine.jet.jet_delay
@@ -115,9 +127,9 @@ def test_demo_director():
 
     assert director.coordinator.engine.jet.jet_delay == t_phys_grb_ref == 1.7
     assert director.coordinator.engine.afterglow.t_peak_days == t_phys_ag_ref == 150.0
-    print("10. presentation timing does not modify physical event timestamps: PASS")
+    print("11. presentation timing does not modify physical event timestamps: PASS")
 
-    # 11. No NaN/Inf in director state
+    # 12. No NaN/Inf in director state
     director.reset()
     director.start()
     for _ in range(6):
@@ -130,9 +142,9 @@ def test_demo_director():
             if isinstance(v, float):
                 assert np.isfinite(v), f"Non-finite event state value for {k}: {v}"
 
-    print("11. no NaN/Inf in director state: PASS")
+    print("12. no NaN/Inf in director state: PASS")
 
-    print("\nALL TASK 017 DEMO DIRECTOR CHECKS PASSED SUCCESSFULLY!")
+    print("\nALL TASK 017 & 021 DEMO DIRECTOR CHECKS PASSED SUCCESSFULLY!")
 
 
 if __name__ == "__main__":

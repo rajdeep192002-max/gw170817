@@ -5,8 +5,8 @@ REDUCED-ORDER APPROXIMATION / SCIENTIFIC TRANSPARENCY:
 Provides deterministic presentation playback control across the GW170817 multi-messenger sequence
 (Inspiral -> Late Inspiral -> Merger -> GRB Prompt -> Kilonova -> Afterglow).
 
-Presentation timing (wall-clock playback seconds per stage) is kept strictly separate from physical
-event timestamps (such as the 150-day afterglow peak or +1.7 s GRB prompt delay).
+Presentation timing (wall-clock playback seconds per stage) and presentation speed scaling (REAL TIME / SLOW MOTION)
+are kept strictly separate from physical event timestamps and physical integration timestep dt_physics (1e-4 s).
 """
 from enum import Enum
 from typing import Optional, Dict, Any, List
@@ -28,13 +28,19 @@ class DemoStage(Enum):
     COMPLETE = "COMPLETE"
 
 
+class PlaybackMode(Enum):
+    """Presentation playback speed modes."""
+    REAL_TIME = "REAL TIME"
+    SLOW_MOTION = "SLOW MOTION"
+
+
 class DemoDirector:
     """
     Deterministic Playback Controller for GW170817 Multi-Messenger Demonstration.
-    Orchestrates DemoScenario checkpoints into a structured presentation playback sequence.
+    Orchestrates DemoScenario checkpoints into a continuous presentation playback sequence.
+    Supports REAL TIME (1.0x) and SLOW MOTION (0.1x) playback modes.
     """
 
-    # Presentation stage sequence (excluding IDLE and COMPLETE)
     STAGE_SEQUENCE: List[DemoStage] = [
         DemoStage.INSPIRAL,
         DemoStage.LATE_INSPIRAL,
@@ -44,7 +50,6 @@ class DemoDirector:
         DemoStage.AFTERGLOW
     ]
 
-    # Mapping of DemoStage to DemoScenario checkpoint names
     CHECKPOINT_MAP: Dict[DemoStage, str] = {
         DemoStage.INSPIRAL:      "INSPIRAL_START",
         DemoStage.LATE_INSPIRAL: "INSPIRAL_LATE",
@@ -54,7 +59,6 @@ class DemoDirector:
         DemoStage.AFTERGLOW:     "AFTERGLOW_PEAK"
     }
 
-    # Presentation playback durations per stage [s]
     STAGE_DURATIONS: Dict[DemoStage, float] = {
         DemoStage.INSPIRAL:      8.0,
         DemoStage.LATE_INSPIRAL: 5.0,
@@ -94,8 +98,12 @@ class DemoDirector:
         self._stage_index: int = -1
         self._stage_elapsed: float = 0.0
         self._is_paused: bool = False
-        self._total_duration: float = sum(self.STAGE_DURATIONS.values())
 
+        # Playback speed modes
+        self._playback_mode: PlaybackMode = PlaybackMode.REAL_TIME
+        self._speed_multiplier: float = 1.0
+
+        self._total_duration: float = sum(self.STAGE_DURATIONS.values())
         self.reset()
 
     def reset(self) -> MultiMessengerEventState:
@@ -114,7 +122,7 @@ class DemoDirector:
         self._stage_elapsed = 0.0
         self._is_paused = False
         checkpoint = self.CHECKPOINT_MAP[self._stage]
-        return self.scenario.jump_to_checkpoint(checkpoint)
+        return self.scenario.jump_to_checkpoint(checkpoint, preserve_waveform=True)
 
     def pause(self):
         """Pause presentation playback."""
@@ -133,6 +141,31 @@ class DemoDirector:
         else:
             self.pause()
 
+    def set_real_time(self):
+        """Set playback mode to REAL TIME (1.0x)."""
+        self._playback_mode = PlaybackMode.REAL_TIME
+        self._speed_multiplier = 1.0
+
+    def set_slow_motion(self):
+        """Set playback mode to SLOW MOTION (0.1x)."""
+        self._playback_mode = PlaybackMode.SLOW_MOTION
+        self._speed_multiplier = 0.10
+
+    def toggle_playback_mode(self):
+        """Toggle playback mode between REAL TIME and SLOW MOTION."""
+        if self._playback_mode == PlaybackMode.REAL_TIME:
+            self.set_slow_motion()
+        else:
+            self.set_real_time()
+
+    def increase_speed(self):
+        """Increase presentation speed multiplier."""
+        self._speed_multiplier = min(10.0, float(np.round(self._speed_multiplier + 0.25, 2)))
+
+    def decrease_speed(self):
+        """Decrease presentation speed multiplier."""
+        self._speed_multiplier = max(0.05, float(np.round(self._speed_multiplier - 0.25, 2)))
+
     def next_stage(self) -> MultiMessengerEventState:
         """Advance deterministically to the next demonstration stage."""
         if not self.is_running:
@@ -143,7 +176,7 @@ class DemoDirector:
             self._stage = self.STAGE_SEQUENCE[self._stage_index]
             self._stage_elapsed = 0.0
             checkpoint = self.CHECKPOINT_MAP[self._stage]
-            return self.scenario.jump_to_checkpoint(checkpoint)
+            return self.scenario.jump_to_checkpoint(checkpoint, preserve_waveform=True)
         else:
             self._stage = DemoStage.COMPLETE
             self._stage_index = len(self.STAGE_SEQUENCE)
@@ -158,32 +191,39 @@ class DemoDirector:
             self._stage = self.STAGE_SEQUENCE[self._stage_index]
             self._stage_elapsed = 0.0
             checkpoint = self.CHECKPOINT_MAP[self._stage]
-            return self.scenario.jump_to_checkpoint(checkpoint)
+            return self.scenario.jump_to_checkpoint(checkpoint, preserve_waveform=True)
 
         if self._stage_index > 0:
             self._stage_index -= 1
             self._stage = self.STAGE_SEQUENCE[self._stage_index]
             self._stage_elapsed = 0.0
             checkpoint = self.CHECKPOINT_MAP[self._stage]
-            return self.scenario.jump_to_checkpoint(checkpoint)
+            return self.scenario.jump_to_checkpoint(checkpoint, preserve_waveform=True)
         else:
             return self.reset()
 
     def update(self, dt: float) -> MultiMessengerEventState:
         """
-        Advance presentation timer by dt seconds.
+        Advance presentation timer by dt * speed_multiplier seconds.
         Automatically transitions to the next stage when presentation stage duration elapses.
-        Does NOT modify physical event timestamps.
+        Does NOT modify physical event timestamps or dt_physics.
         """
         if not self.is_running or self._is_paused:
             return self.coordinator.current_state
 
         dt_val = max(0.0, float(dt))
-        self._stage_elapsed += dt_val
+        dt_pres = dt_val * self._speed_multiplier
+        self._stage_elapsed += dt_pres
 
-        # Step particle/GW inspiral simulation if in live inspiral stage
-        if self._stage in [DemoStage.INSPIRAL, DemoStage.LATE_INSPIRAL]:
-            self.coordinator.step(dt_val)
+        # Smooth presentation-time mapping for inspiral stages without continuous 0.1 ms integration loops
+        if self._stage == DemoStage.INSPIRAL:
+            p = min(1.0, max(0.0, self._stage_elapsed / 8.0))
+            tau_rem = 12.0 - 10.0 * p
+            self.coordinator.engine.set_inspiral_time(tau_rem, dt_phase=dt_pres)
+        elif self._stage == DemoStage.LATE_INSPIRAL:
+            p = min(1.0, max(0.0, self._stage_elapsed / 5.0))
+            tau_rem = 2.0 - 1.9 * p
+            self.coordinator.engine.set_inspiral_time(tau_rem, dt_phase=dt_pres)
 
         stage_dur = self.STAGE_DURATIONS.get(self._stage, 5.0)
         if self._stage_elapsed >= stage_dur:
@@ -200,6 +240,16 @@ class DemoDirector:
     def stage_enum(self) -> DemoStage:
         """Return current DemoStage enum."""
         return self._stage
+
+    @property
+    def playback_mode_str(self) -> str:
+        """Return playback mode name."""
+        return self._playback_mode.value
+
+    @property
+    def speed_multiplier(self) -> float:
+        """Return presentation speed multiplier."""
+        return self._speed_multiplier
 
     @property
     def is_running(self) -> bool:
@@ -244,6 +294,8 @@ class DemoDirector:
             "current_stage": self.current_stage,
             "stage_index": self._stage_index,
             "total_stages": len(self.STAGE_SEQUENCE),
+            "playback_mode": self.playback_mode_str,
+            "speed_multiplier": self._speed_multiplier,
             "stage_elapsed": self._stage_elapsed,
             "stage_duration": self.STAGE_DURATIONS.get(self._stage, 0.0),
             "stage_progress": self.stage_progress,

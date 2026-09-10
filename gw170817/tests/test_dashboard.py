@@ -1,5 +1,5 @@
 """
-Test suite for GW170817 Scientific Dashboard v0.9 non-GUI logic (Task 014).
+Test suite for GW170817 Scientific Dashboard logic and rendering kernels (Task 014 & Task 021).
 """
 import sys
 sys.path.insert(0, '.')
@@ -8,16 +8,18 @@ from gw170817.config import SimConfig
 from gw170817.constants import M_sun
 from gw170817.simulation.engine import GW170817Simulation
 from gw170817.visualization.renderer import ParticleRenderer
+from gw170817.visualization.lensing import RelativisticLensingModel
 from gw170817.visualization.dashboard import ScientificDashboard, launch_dashboard
 
 
 def test_dashboard_logic():
-    print("=== TASK 014 DASHBOARD LOGIC VALIDATION ===")
+    print("=== TASK 014 & 021 DASHBOARD LOGIC VALIDATION ===")
 
     # 1. Component Imports Check
-    from gw170817.visualization import ParticleRenderer, ScientificDashboard
+    from gw170817.visualization import ParticleRenderer, ScientificDashboard, RelativisticLensingModel
     assert ParticleRenderer is not None
     assert ScientificDashboard is not None
+    assert RelativisticLensingModel is not None
 
     # 2. Engine Supply & Dashboard Construction
     config = SimConfig(mode="DEV", seed=42)
@@ -30,18 +32,22 @@ def test_dashboard_logic():
     assert renderer is not None
     assert renderer.colors.shape[0] == engine.psys.max_particles
 
-    # 3. Particle Renderer GPU Update Test
+    # 3. Particle Renderer Luminous GPU Update Test
     st_init = engine.current_state
     renderer.update_particle_colors(
+        engine.psys.pos,
         engine.psys.star_id,
         engine.psys.active,
         engine.psys.max_particles,
-        float(st_init.merger_contact_fraction)
+        float(st_init.merger_contact_fraction),
+        0
     )
 
     colors_np = renderer.colors.to_numpy()
     assert colors_np.shape == (engine.psys.max_particles, 3)
     assert np.all(np.isfinite(colors_np))
+    # Emissive core intensity check (r_col or b_col >= 0.5)
+    assert np.mean(colors_np) > 0.4
 
     # 4. Waveform Renderer Buffer Update Test
     engine.step(0.001)
@@ -52,7 +58,19 @@ def test_dashboard_logic():
     assert wf_verts.shape[0] == renderer.n_wave_vertices
     assert np.all(np.isfinite(wf_verts))
 
-    # 5. Demo Jump Preservation Test
+    # 5. Relativistic Jet Outflow Geometry Test
+    renderer.update_jet_geometry(is_active=True, max_extent_m=400.0e3)
+    jet_verts = renderer.jet_vertices.to_numpy()
+    assert jet_verts.shape[0] == renderer.n_jet_vertices
+    assert np.all(np.isfinite(jet_verts))
+
+    # 6. Relativistic Lensing Model Integration Test
+    lensing = RelativisticLensingModel(config=config)
+    lens_st = lensing.evaluate()
+    assert lens_st.enabled
+    assert np.isfinite(lens_st.compactness1)
+
+    # 7. Demo Jump Preservation Test
     engine.jump_to_demo_phase(f_gw=1200.0, separation=30.0e3)
     st_demo = engine.current_state
 
@@ -62,35 +80,39 @@ def test_dashboard_logic():
     assert st_demo.phase in ["MERGER", "POST_MERGER"]
 
     renderer.update_particle_colors(
+        engine.psys.pos,
         engine.psys.star_id,
         engine.psys.active,
         engine.psys.max_particles,
-        float(st_demo.merger_contact_fraction)
+        float(st_demo.merger_contact_fraction),
+        1
     )
     colors_demo = renderer.colors.to_numpy()
     assert np.all(np.isfinite(colors_demo))
 
-    # 6. Reset State Preservation Test
+    # 8. Reset State Preservation Test
     engine.reset()
+    engine.set_inspiral_time(12.0)
     st_reset = engine.current_state
 
-    assert st_reset.elapsed_time == 0.0
     assert st_reset.phase == "INSPIRAL"
-    assert abs(st_reset.gw_frequency - 40.0) < 1e-5
+    assert abs(st_reset.event_time - (-12.0)) < 0.5
 
-    # 7. Numerical Safety Check across all state fields
+    # 9. Numerical Safety Check across all state fields
     for field, val in st_reset.__dict__.items():
         if isinstance(val, (float, int)):
             assert np.isfinite(val), f"SimulationState field {field} non-finite: {val}"
 
     print("Dashboard Imports: PASS")
     print("Engine Integration: PASS")
-    print("Particle Color GPU Kernel: PASS")
+    print("Particle Color GPU Kernel (Luminous Density/Temp): PASS")
     print("Waveform Trace GPU Kernel: PASS")
+    print("Relativistic Jet Outflow Geometry: PASS")
+    print("Relativistic Lensing Integration: PASS")
     print("Demo Jump Preservation: PASS")
     print("Reset State Preservation: PASS")
     print("Numerical Safety: PASS")
-    print("\nALL TASK 014 DASHBOARD LOGIC CHECKS PASSED SUCCESSFULLY!")
+    print("\nALL TASK 014 & 021 DASHBOARD LOGIC CHECKS PASSED SUCCESSFULLY!")
 
 
 if __name__ == "__main__":

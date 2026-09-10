@@ -198,6 +198,62 @@ class GW170817Simulation:
 
         self._update_cached_state()
 
+    def set_inspiral_time(self, tau_rem: float, dt_phase: float = 0.0) -> SimulationState:
+        """
+        Set engine inspiral state to a physically consistent remaining time tau_rem [s] to merger
+        using exact inverse Peters quadrupole formula.
+        Does NOT alter dt_physics or modify physical equations.
+        """
+        tau_clamped = max(0.001, float(tau_rem))
+        c_coeff = self.inspiral._df_coeff
+        f_max = self.inspiral.f_max
+
+        # Exact inverse Peters radiation reaction formula for f_gw(tau)
+        f_gw_pow = (8.0 * c_coeff * tau_clamped / 3.0) + (f_max ** (-8.0 / 3.0))
+        f_gw = max(40.0, min(f_max, float(f_gw_pow ** (-3.0 / 8.0))))
+        separation = self.inspiral._compute_separation(f_gw)
+
+        old_phi = self.dynamics.inspiral_state.orbital_phase
+        new_phi = old_phi + np.pi * f_gw * max(0.0, float(dt_phase))
+
+        synthetic_state = InspiralState(
+            time=0.0,
+            f_gw=f_gw,
+            orbital_frequency=f_gw / 2.0,
+            omega_orb=np.pi * f_gw,
+            separation=separation,
+            orbital_phase=new_phi,
+            df_dt=self.inspiral._compute_df_dt(f_gw),
+            chirp_mass=self.config.chirp_mass
+        )
+
+        self.dynamics.inspiral_state = synthetic_state
+        self.dynamics.tidal_state = self.tidal.evaluate(synthetic_state)
+        self.dynamics.merger_state = self.merger.evaluate(synthetic_state)
+
+        # Synchronize particles
+        r1, r2 = self.inspiral.orbital_positions(synthetic_state, self.config.m1, self.config.m2)
+        v1, v2 = self.inspiral.orbital_velocities(synthetic_state, self.config.m1, self.config.m2)
+        eps1 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_1, 0.4)
+        eps2 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_2, 0.4)
+
+        self.dynamics._update_particles_kernel(
+            self.psys.n_particles_1,
+            self.psys.max_particles,
+            float(r1[0]), float(r1[1]), float(r1[2]),
+            float(r2[0]), float(r2[1]), float(r2[2]),
+            float(v1[0]), float(v1[1]), float(v1[2]),
+            float(v2[0]), float(v2[1]), float(v2[2]),
+            float(synthetic_state.orbital_phase),
+            float(synthetic_state.omega_orb),
+            float(eps1), float(eps2),
+            float(self.dynamics.merger_state.contact_fraction),
+            float(self.dynamics.v_clamp)
+        )
+
+        self.is_demo_phase = False
+        return self._update_cached_state()
+
     def _update_cached_state(self) -> SimulationState:
         """Internal helper to construct and cache current SimulationState."""
         insp_state = self.dynamics.inspiral_state
