@@ -19,7 +19,7 @@ def test_benchmark_machinery():
 
     assert cfg_dev.n_particles == 20_000, f"Expected 20,000 particles, got {cfg_dev.n_particles}"
     assert cfg_norm.n_particles == 75_000, f"Expected 75,000 particles, got {cfg_norm.n_particles}"
-    assert cfg_high.n_particles == 150_000, f"Expected 150,000 particles, got {cfg_high.n_particles}"
+    assert cfg_high.n_particles == 100_000, f"Expected 100,000 particles, got {cfg_high.n_particles}"
     print("1. Configuration entries & particle counts: PASS")
 
     # 2. Lightweight Benchmark Run (5 warmup, 10 measurement frames)

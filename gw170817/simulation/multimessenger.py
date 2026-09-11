@@ -2,11 +2,8 @@
 GW170817 Multi-Messenger Event Coordinator & Integrated Event State.
 
 REDUCED-ORDER APPROXIMATION / SCIENTIFIC TRANSPARENCY:
-This module orchestrates the project's physics-informed reduced-order modules
-(gravitational waves, merger dynamics, ejecta, two-component kilonova, structured relativistic jet,
-and broadband afterglow) into a unified multi-messenger event timeline and observational validation layer.
-
-It does NOT perform full numerical relativity, GRHD, MHD, or neutrino radiation transport.
+Orchestrates gravitational waves, rotational dynamics, magnetic winding, disk evolution,
+neutrinos, ejecta, kilonova, relativistic jet, and afterglow.
 """
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -24,7 +21,7 @@ class MultiMessengerEventState:
     event_time: float              # Time relative to merger [s] (0.0 = merger, <0 = inspiral)
     elapsed_time: float            # Engine cumulative simulation time [s]
     step_count: int                # Physics step count
-    phase: str                     # Evolution phase ("INSPIRAL", "MERGER", "POST_MERGER", "GRB", "AFTERGLOW")
+    phase: str                     # Authoritative primary NSM phase ("INSPIRAL", "LATE_INSPIRAL", "MERGER", "RINGDOWN")
 
     # Gravitational-Wave Channel
     gw_frequency: float            # Instantaneous GW frequency [Hz]
@@ -36,6 +33,15 @@ class MultiMessengerEventState:
     contact_fraction: float        # Contact fraction [0.0 to 1.0]
     merger_started: bool           # True if contact/merger regime entered
     merger_complete: bool          # True if compact remnant formed
+
+    # Rotational Dynamics Channel [MOD]
+    omega_core: float              # Central core angular velocity [rad/s]
+    omega_outer: float             # Outer envelope angular velocity [rad/s]
+    differential_rotation: float   # Delta Omega [rad/s]
+    angular_momentum: float        # Total system angular momentum [kg m^2 / s]
+    t_over_w: float                # T / |W| kinetic-to-potential ratio
+    shear: float                   # Shearing rate [s^-1]
+    gravitational_redshift: float  # Redshift z = 1 / sqrt(1 - u) - 1
 
     # Ejecta & Kilonova Channel
     ejecta_mass: float             # Dynamically unbound ejecta mass [kg]
@@ -53,6 +59,17 @@ class MultiMessengerEventState:
     # Broadband Afterglow Channel
     afterglow_flux: float          # Observed afterglow flux density F_nu [W m^-2 Hz^-1] (1 GHz)
     afterglow_peak_time_days: float# Reference peak time [days] (150.0 d)
+
+    # Remnant, Disk, Magnetic & Neutrino Subsystems
+    remnant_scenario: str          # Remnant scenario ("GW170817_LIKE", "PROMPT_BH_REFERENCE", "HMNS_REFERENCE")
+    remnant_type: str              # Physical remnant state ("INSPIRAL", "HMNS", "BH")
+    disk_mass_msun: float          # Accretion disk mass [M_sun]
+    b_poloidal: float              # Poloidal magnetic field magnitude [Gauss]
+    b_toroidal: float              # Toroidal magnetic field magnitude [Gauss]
+    b_ratio: float                 # Magnetic winding ratio B_phi / B_p
+    mri_active: bool               # True if Magnetorotational Instability active
+    poynting_luminosity: float     # Poynting flux output [W]
+    neutrino_luminosity: float     # Neutrino emission luminosity [W]
 
     # Observational Validation Channel
     validation_passed: bool        # True if all validation checks pass
@@ -104,6 +121,10 @@ class MultiMessengerCoordinator:
             m_blue = getattr(self.config, "M_EJ_BLUE", 0.02 * M_sun)
             m_red = getattr(self.config, "M_EJ_RED", 0.04 * M_sun)
             m_tot = m_blue + m_red
+            m_rich_frac = m_red / m_tot if m_tot > 0 else 0.5
+            m_poor_frac = m_blue / m_tot if m_tot > 0 else 0.5
+            eps_dot = 2.0e6 * ((max(0.0, t_val) + 10.0) / 86400.0) ** (-1.3)
+            kappa = 0.1 * m_poor_frac + 1.0 * m_rich_frac
             ej_state = EjectaState(
                 time=t_val,
                 ejecta_mass=m_tot,
@@ -114,7 +135,15 @@ class MultiMessengerCoordinator:
                 kinetic_energy=0.5 * m_tot * (0.2 * c)**2,
                 angular_momentum_proxy=0.0,
                 mean_Ye=0.25,
-                lanthanide_rich_fraction=m_red / m_tot if m_tot > 0 else 0.5
+                lanthanide_rich_fraction=m_rich_frac,
+                lanthanide_poor_fraction=m_poor_frac,
+                dynamical_ejecta_mass=m_tot,
+                disk_wind_ejecta_mass=0.0,
+                radioactive_heating_rate=eps_dot,
+                opacity_mean=kappa,
+                temperature_proxy=0.0,
+                density_proxy=0.0,
+                r_process_active=True
             )
         return ej_state
 
@@ -123,14 +152,19 @@ class MultiMessengerCoordinator:
         st = self.engine.current_state
         val_rep = self.validation_report()
 
-        # Strain waveform sample
         h_plus = 0.0
         h_cross = 0.0
         if self.engine.waveform_buffer.count > 0:
             h_plus = float(self.engine.waveform_buffer._h_plus[self.engine.waveform_buffer._head - 1])
             h_cross = float(self.engine.waveform_buffer._h_cross[self.engine.waveform_buffer._head - 1])
 
-        # Kilonova thermal evaluation at current event time
+        insp_st = self.engine.dynamics.inspiral_state
+        rem_st = self.engine.remnant.evaluate(insp_st, st.event_time)
+        rot_st = self.engine.rotation.evaluate(insp_st, rem_st, st.event_time)
+        disk_st = self.engine.disk.evaluate(rem_st, st.event_time, rot_st)
+        mag_st = self.engine.magnetic_field.evaluate(rem_st, disk_st, st.event_time, rot_st)
+        nu_st = self.engine.neutrinos.evaluate(rem_st, disk_st, st.event_time)
+
         ej_state = self._get_ejecta_state(st.event_time)
         kn_state = self.engine.kilonova.evaluate(ej_state, max(0.0, st.event_time))
 
@@ -148,6 +182,13 @@ class MultiMessengerCoordinator:
             contact_fraction=st.merger_contact_fraction,
             merger_started=st.merger_started,
             merger_complete=st.merger_complete,
+            omega_core=rot_st.omega_core,
+            omega_outer=rot_st.omega_outer,
+            differential_rotation=rot_st.differential_rotation,
+            angular_momentum=rot_st.angular_momentum,
+            t_over_w=rot_st.T_over_W,
+            shear=rot_st.shear,
+            gravitational_redshift=rot_st.gravitational_redshift,
             ejecta_mass=ej_state.ejecta_mass,
             ejecta_fraction=ej_state.ejecta_fraction,
             kilonova_luminosity=kn_state.L_total,
@@ -159,6 +200,15 @@ class MultiMessengerCoordinator:
             jet_viewing_angle_deg=viewing_angle_deg,
             afterglow_flux=st.afterglow_flux,
             afterglow_peak_time_days=self.engine.afterglow.t_peak_days,
+            remnant_scenario=rem_st.scenario,
+            remnant_type=rem_st.remnant_type,
+            disk_mass_msun=disk_st.disk_mass_msun,
+            b_poloidal=mag_st.b_poloidal,
+            b_toroidal=mag_st.b_toroidal,
+            b_ratio=mag_st.b_ratio,
+            mri_active=mag_st.mri_active,
+            poynting_luminosity=mag_st.poynting_luminosity,
+            neutrino_luminosity=nu_st.luminosity_total,
             validation_passed=val_rep.all_passed,
             validation_passed_count=sum(1 for r in val_rep.results if r.passed),
             validation_total_count=len(val_rep.results)
@@ -177,8 +227,7 @@ class MultiMessengerCoordinator:
 
     def evaluate_at_event_time(self, t_seconds: float) -> MultiMessengerEventState:
         """
-        Evaluate messenger channels (Timeline phase, Jet, Afterglow, Kilonova)
-        at a specific event time t_seconds relative to merger without particle stepping.
+        Evaluate messenger channels at a specific event time t_seconds relative to merger without particle stepping.
         """
         t_val = float(t_seconds)
         merg_state = self.engine.dynamics.merger_state
@@ -190,7 +239,14 @@ class MultiMessengerCoordinator:
         ag_state = self.engine.afterglow.evaluate(time_seconds=max(0.0, t_val), jet_state=j_state)
         val_rep = self.validation_report()
 
-        return MultiMessengerEventState(
+        insp_st = self.engine.dynamics.inspiral_state
+        rem_st = self.engine.remnant.evaluate(insp_st, t_val)
+        rot_st = self.engine.rotation.evaluate(insp_st, rem_st, t_val)
+        disk_st = self.engine.disk.evaluate(rem_st, t_val, rot_st)
+        mag_st = self.engine.magnetic_field.evaluate(rem_st, disk_st, t_val, rot_st)
+        nu_st = self.engine.neutrinos.evaluate(rem_st, disk_st, t_val)
+
+        self._event_state = MultiMessengerEventState(
             event_time=t_val,
             elapsed_time=self.engine.elapsed_time,
             step_count=self.engine.step_count,
@@ -202,6 +258,13 @@ class MultiMessengerCoordinator:
             contact_fraction=merg_state.contact_fraction,
             merger_started=merg_state.merger_started,
             merger_complete=merg_state.merger_complete,
+            omega_core=rot_st.omega_core,
+            omega_outer=rot_st.omega_outer,
+            differential_rotation=rot_st.differential_rotation,
+            angular_momentum=rot_st.angular_momentum,
+            t_over_w=rot_st.T_over_W,
+            shear=rot_st.shear,
+            gravitational_redshift=rot_st.gravitational_redshift,
             ejecta_mass=ej_state.ejecta_mass,
             ejecta_fraction=ej_state.ejecta_fraction,
             kilonova_luminosity=kn_state.L_total,
@@ -213,12 +276,43 @@ class MultiMessengerCoordinator:
             jet_viewing_angle_deg=float(np.rad2deg(self.engine.jet.viewing_angle)),
             afterglow_flux=ag_state.flux_density,
             afterglow_peak_time_days=self.engine.afterglow.t_peak_days,
+            remnant_scenario=rem_st.scenario,
+            remnant_type=rem_st.remnant_type,
+            disk_mass_msun=disk_st.disk_mass_msun,
+            b_poloidal=mag_st.b_poloidal,
+            b_toroidal=mag_st.b_toroidal,
+            b_ratio=mag_st.b_ratio,
+            mri_active=mag_st.mri_active,
+            poynting_luminosity=mag_st.poynting_luminosity,
+            neutrino_luminosity=nu_st.luminosity_total,
             validation_passed=val_rep.all_passed,
             validation_passed_count=sum(1 for r in val_rep.results if r.passed),
             validation_total_count=len(val_rep.results)
         )
+        return self._event_state
 
     @property
     def current_state(self) -> MultiMessengerEventState:
         """Return current cached MultiMessengerEventState."""
         return self._event_state
+
+    @property
+    def grb_state(self):
+        """Current relativistic jet / prompt GRB state object derived from event_time."""
+        t_val = self.current_state.event_time
+        return self.engine.jet.evaluate(time=t_val, merger_state=self.engine.dynamics.merger_state)
+
+    @property
+    def kilonova_state(self):
+        """Current two-component kilonova emission state object derived from event_time."""
+        t_val = max(0.0, self.current_state.event_time)
+        ej_state = self._get_ejecta_state(t_val)
+        return self.engine.kilonova.evaluate(ej_state, t_val)
+
+    @property
+    def afterglow_state(self):
+        """Current broadband afterglow emission state object derived from event_time."""
+        t_val = max(0.0, self.current_state.event_time)
+        j_state = self.grb_state
+        return self.engine.afterglow.evaluate(time_seconds=t_val, jet_state=j_state)
+

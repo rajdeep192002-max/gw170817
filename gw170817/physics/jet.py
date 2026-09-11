@@ -1,4 +1,4 @@
-﻿"""
+"""
 Reduced-order structured relativistic jet model for GW170817.
 
 REDUCED-ORDER APPROXIMATION:
@@ -133,9 +133,9 @@ class StructuredJetModel:
     def launch_from_merger(self, merger_state: MergerState) -> bool:
         """
         Phenomenological jet launching condition:
-        Returns True if merger is complete or system is in contact.
+        Returns True if merger is complete, in contact, or merger started.
         """
-        return bool(merger_state.merger_complete or merger_state.in_contact)
+        return bool(merger_state.merger_complete or merger_state.in_contact or merger_state.merger_started)
 
     def evaluate(
         self,
@@ -162,8 +162,7 @@ class StructuredJetModel:
 
         if merger_state is not None:
             launched = self.launch_from_merger(merger_state)
-            merger_t = merger_state.time
-            grb_triggered = bool(launched and (time_val >= merger_t + self.jet_delay))
+            grb_triggered = bool(launched and (time_val >= self.jet_delay))
 
         # Structure profiles
         E_th = self.energy_profile(theta_val)

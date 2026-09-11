@@ -48,7 +48,7 @@ def test_multimessenger():
     st_merger = coord.jump_to_demo_phase(f_gw=1200.0, separation=30.0e3)
     assert st_merger.merger_started, "Merger regime should be started"
     assert st_merger.contact_fraction > 0.0
-    assert st_merger.phase in ["MERGER", "POST_MERGER"]
+    assert st_merger.phase in ["MERGER", "RINGDOWN"]
     print("5. Merger transition: PASS")
 
     # 6. Event Time Consistency with EventTimeline
@@ -63,7 +63,7 @@ def test_multimessenger():
 
     assert not st_grb_before.grb_triggered, "GRB should not trigger before delay"
     assert st_grb_after.grb_triggered, "GRB should trigger at +1.74 s"
-    assert st_grb_after.phase == "GRB"
+    assert st_grb_after.phase == "RINGDOWN"
     print("7. GRB prompt activation at +1.7 s: PASS")
 
     # 8. Kilonova State Available After Merger
@@ -76,7 +76,7 @@ def test_multimessenger():
     # 9. Afterglow State Available at Late Time
     st_ag = coord.evaluate_at_event_time(150.0 * day)
     assert st_ag.afterglow_flux > 0.0
-    assert st_ag.phase == "AFTERGLOW"
+    assert st_ag.phase == "RINGDOWN"
     print("9. Late-time afterglow evaluation: PASS")
 
     # 10. Afterglow Peak Occurs at ~150 Days
@@ -123,7 +123,7 @@ def test_multimessenger():
     assert st_cp4.grb_triggered
 
     st_cp6 = scenario.jump_to_checkpoint("AFTERGLOW_PEAK")
-    assert st_cp6.phase == "AFTERGLOW"
+    assert st_cp6.phase == "RINGDOWN"
     print("Demo Scenario Checkpoints: PASS")
 
     print("\nALL TASK 016 MULTI-MESSENGER INTEGRATION CHECKS PASSED SUCCESSFULLY!")

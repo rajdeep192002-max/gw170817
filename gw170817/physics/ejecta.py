@@ -19,25 +19,63 @@ if TYPE_CHECKING:
 
 @dataclass
 class EjectaState:
-    """Summary diagnostic state of dynamically unbound ejecta."""
-    time: float                    # Physical simulation time [s]
-    ejecta_mass: float             # Total mass of unbound ejecta [kg]
-    ejecta_fraction: float         # Fraction of total mass unbound [0.0 to 1.0]
-    ejecta_particle_count: int     # Number of unbound ejecta particles
-    mean_velocity: float           # Mass-weighted mean ejecta speed [m/s]
-    max_velocity: float            # Maximum ejecta particle speed [m/s]
-    kinetic_energy: float          # Total kinetic energy of ejecta [J]
-    angular_momentum_proxy: float  # Angular momentum magnitude proxy of ejecta [kg m^2/s]
-    mean_Ye: float                 # Mass-weighted mean electron fraction Ye
-    lanthanide_rich_fraction: float # Mass fraction of ejecta with Ye <= 0.25 [0.0 to 1.0]
+    """Summary diagnostic state of dynamically unbound ejecta and R-process nucleosynthesis."""
+    time: float                     # Physical simulation time [s]
+    ejecta_mass: float              # Total mass of unbound ejecta [kg]
+    ejecta_fraction: float          # Fraction of total mass unbound [0.0 to 1.0]
+    ejecta_particle_count: int      # Number of unbound ejecta particles
+    mean_velocity: float            # Mass-weighted mean ejecta speed [m/s]
+    max_velocity: float             # Maximum ejecta particle speed [m/s]
+    kinetic_energy: float           # Total kinetic energy of ejecta [J]
+    angular_momentum_proxy: float   # Angular momentum magnitude proxy of ejecta [kg m^2/s]
+    mean_Ye: float                  # Mass-weighted mean electron fraction Ye
+    lanthanide_rich_fraction: float  # Mass fraction of ejecta with Ye <= 0.25 [0.0 to 1.0]
+    lanthanide_poor_fraction: float = 0.0  # Mass fraction of ejecta with Ye > 0.25 [0.0 to 1.0]
+    dynamical_ejecta_mass: float = 0.0  # Mass of dynamical ejecta [kg]
+    disk_wind_ejecta_mass: float = 0.0 # Mass of post-merger disk wind ejecta [kg]
+    radioactive_heating_rate: float = 0.0 # R-process decay heating rate eps_dot [W/kg]
+    opacity_mean: float = 0.1       # Mass-weighted mean gray opacity kappa [m^2/kg]
+    temperature_proxy: float = 0.0  # Mass-weighted mean temperature estimate [K]
+    density_proxy: float = 0.0      # Mass-weighted mean density estimate [kg/m^3]
+    r_process_active: bool = False  # True if r-process heating is active post-merger
+
+    def __post_init__(self):
+        if self.lanthanide_poor_fraction == 0.0 and self.lanthanide_rich_fraction < 1.0:
+            self.lanthanide_poor_fraction = max(0.0, 1.0 - self.lanthanide_rich_fraction)
 
 
 @ti.data_oriented
 class EjectaModel:
     """
-    Taichi-based reduced-order ejecta classifier and tracker.
+    Taichi-based reduced-order ejecta classifier, R-process proxy, and tracker.
     Uses preallocated Taichi fields for GPU particle classification.
+
+    Diagnostic state is cached to avoid redundant GPU->CPU transfers.
+    compute_state() only performs to_numpy() when the classification
+    has actually been updated since the last call.
     """
+
+    # Canonical zero state returned when no classification has been performed.
+    _ZERO_STATE = EjectaState(
+        time=0.0,
+        ejecta_mass=0.0,
+        ejecta_fraction=0.0,
+        ejecta_particle_count=0,
+        mean_velocity=0.0,
+        max_velocity=0.0,
+        kinetic_energy=0.0,
+        angular_momentum_proxy=0.0,
+        mean_Ye=0.05,
+        lanthanide_rich_fraction=0.0,
+        lanthanide_poor_fraction=1.0,
+        dynamical_ejecta_mass=0.0,
+        disk_wind_ejecta_mass=0.0,
+        radioactive_heating_rate=0.0,
+        opacity_mean=0.1,
+        temperature_proxy=0.0,
+        density_proxy=0.0,
+        r_process_active=False
+    )
 
     def __init__(self, config: SimConfig = None):
         if config is None:
@@ -50,11 +88,17 @@ class EjectaModel:
         self.Ye_field = ti.field(dtype=ti.f32, shape=self.max_particles)
         self.lanthanide_rich = ti.field(dtype=ti.i32, shape=self.max_particles)
 
+        # Diagnostic cache — avoids GPU->CPU transfers on reset / init / checkpoint nav
+        self._cached_state: EjectaState = EjectaModel._ZERO_STATE
+        self._classification_dirty: bool = False
+
         self.initialize()
 
     def initialize(self):
-        """Reset ejecta classification fields to zero."""
+        """Reset ejecta classification fields to zero and clear cached state."""
         self._reset_kernel()
+        self._cached_state = EjectaModel._ZERO_STATE
+        self._classification_dirty = False
 
     @ti.kernel
     def _reset_kernel(self):
@@ -66,14 +110,18 @@ class EjectaModel:
     def classify(
         self,
         psys: Any,
-        com_pos: np.ndarray,
-        com_vel: np.ndarray,
+        com_pos: Any = None,
+        com_vel: Any = None,
         M_rem: float = None
     ):
         """
         Classify particles into bound vs dynamically unbound ejecta using a
         Newtonian escape-energy proxy and compute phenomenological Ye composition.
         """
+        if com_pos is None:
+            com_pos = np.zeros(3, dtype=np.float32)
+        if com_vel is None:
+            com_vel = np.zeros(3, dtype=np.float32)
         if M_rem is None:
             M_rem = self.config.M_total
 
@@ -92,6 +140,7 @@ class EjectaModel:
             float(M_rem),
             float(c)
         )
+        self._classification_dirty = True
 
     @ti.kernel
     def _classify_kernel(
@@ -159,7 +208,36 @@ class EjectaModel:
     def compute_state(self, psys: Any, current_time: float) -> EjectaState:
         """
         Aggregate diagnostics and return an EjectaState dataclass.
+
+        Uses a dirty-flag cache: GPU->CPU transfers (to_numpy) only occur
+        when classify() has been called since the last compute_state().
+        On reset / init / checkpoint navigation, returns the cached zero state
+        without any GPU memory access.
         """
+        if not self._classification_dirty:
+            # Return cached state with updated timestamp — no GPU transfer needed
+            return EjectaState(
+                time=current_time,
+                ejecta_mass=self._cached_state.ejecta_mass,
+                ejecta_fraction=self._cached_state.ejecta_fraction,
+                ejecta_particle_count=self._cached_state.ejecta_particle_count,
+                mean_velocity=self._cached_state.mean_velocity,
+                max_velocity=self._cached_state.max_velocity,
+                kinetic_energy=self._cached_state.kinetic_energy,
+                angular_momentum_proxy=self._cached_state.angular_momentum_proxy,
+                mean_Ye=self._cached_state.mean_Ye,
+                lanthanide_rich_fraction=self._cached_state.lanthanide_rich_fraction,
+                lanthanide_poor_fraction=self._cached_state.lanthanide_poor_fraction,
+                dynamical_ejecta_mass=self._cached_state.dynamical_ejecta_mass,
+                disk_wind_ejecta_mass=self._cached_state.disk_wind_ejecta_mass,
+                radioactive_heating_rate=self._cached_state.radioactive_heating_rate,
+                opacity_mean=self._cached_state.opacity_mean,
+                temperature_proxy=self._cached_state.temperature_proxy,
+                density_proxy=self._cached_state.density_proxy,
+                r_process_active=self._cached_state.r_process_active
+            )
+
+        # Classification has changed — perform GPU->CPU transfer
         ejecta_flags = self.ejecta_flag.to_numpy()
         ye_vals = self.Ye_field.to_numpy()
         lan_flags = self.lanthanide_rich.to_numpy()
@@ -173,7 +251,7 @@ class EjectaModel:
         count = int(np.sum(mask))
 
         if count == 0:
-            return EjectaState(
+            state = EjectaState(
                 time=current_time,
                 ejecta_mass=0.0,
                 ejecta_fraction=0.0,
@@ -183,8 +261,19 @@ class EjectaModel:
                 kinetic_energy=0.0,
                 angular_momentum_proxy=0.0,
                 mean_Ye=0.05,
-                lanthanide_rich_fraction=0.0
+                lanthanide_rich_fraction=0.0,
+                lanthanide_poor_fraction=1.0,
+                dynamical_ejecta_mass=0.0,
+                disk_wind_ejecta_mass=0.0,
+                radioactive_heating_rate=0.0,
+                opacity_mean=0.1,
+                temperature_proxy=0.0,
+                density_proxy=0.0,
+                r_process_active=False
             )
+            self._cached_state = state
+            self._classification_dirty = False
+            return state
 
         m_ej = mass_np[mask]
         pos_ej = pos_np[mask]
@@ -192,11 +281,17 @@ class EjectaModel:
         ye_ej = ye_vals[mask]
         lan_ej = lan_flags[mask]
 
-        ej_mass = float(np.sum(m_ej))
+        dyn_mass = float(np.sum(m_ej))
+        
+        # Reduced-order post-merger disk-wind ejecta contribution [kg]
+        t_pos = max(0.0, current_time)
+        disk_wind_mass = float(0.15 * 0.06 * M_sun * (1.0 - np.exp(-t_pos / 0.3))) if current_time > 0.0 else 0.0
+        
+        ej_mass = dyn_mass + disk_wind_mass
         ej_frac = float(np.clip(ej_mass / total_mass, 0.0, 1.0))
 
         speeds = np.linalg.norm(vel_ej, axis=1)
-        mean_v = float(np.sum(m_ej * speeds) / ej_mass)
+        mean_v = float(np.sum(m_ej * speeds) / max(1.0e-10, dyn_mass))
         max_v = float(np.max(speeds))
 
         # Kinetic energy (float64 calculation for numerical safety)
@@ -207,11 +302,27 @@ class EjectaModel:
         L_vec = np.sum(m_ej[:, None] * cross_prod, axis=0)
         L_mag = float(np.linalg.norm(L_vec))
 
-        mean_ye = float(np.sum(m_ej * ye_ej) / ej_mass)
+        mean_ye = float(np.sum(m_ej * ye_ej) / max(1.0e-10, dyn_mass))
         lan_mass = float(np.sum(m_ej[lan_ej == 1]))
-        lan_frac = float(np.clip(lan_mass / ej_mass, 0.0, 1.0))
+        lan_frac = float(np.clip(lan_mass / max(1.0e-10, dyn_mass), 0.0, 1.0))
+        lan_poor_frac = float(1.0 - lan_frac)
 
-        return EjectaState(
+        # R-process radioactive decay heating rate eps_dot [W/kg]
+        t0_heating = 10.0  # softening time [s]
+        t_days = max(current_time + t0_heating, t0_heating) / 86400.0
+        eps_dot = float(2.0e6 * (t_days ** (-1.3)))
+
+        # Mean opacity kappa [m^2/kg] (1 cm^2/g = 0.1 m^2/kg)
+        opacity_mean = float(0.1 * lan_poor_frac + 1.0 * lan_frac)
+
+        # Temperature and density proxies
+        r_eff = max(10.0e3, mean_v * t_pos)
+        vol_eff = float((4.0 / 3.0) * np.pi * (r_eff ** 3))
+        rho_proxy = float(ej_mass / vol_eff)
+        temp_proxy = float(1.0e4 * ((t_pos + 1.0) ** (-0.35)))
+        r_proc_active = bool(ej_mass > 0.0 and current_time > 0.0)
+
+        state = EjectaState(
             time=current_time,
             ejecta_mass=ej_mass,
             ejecta_fraction=ej_frac,
@@ -221,5 +332,16 @@ class EjectaModel:
             kinetic_energy=ke,
             angular_momentum_proxy=L_mag,
             mean_Ye=mean_ye,
-            lanthanide_rich_fraction=lan_frac
+            lanthanide_rich_fraction=lan_frac,
+            lanthanide_poor_fraction=lan_poor_frac,
+            dynamical_ejecta_mass=dyn_mass,
+            disk_wind_ejecta_mass=disk_wind_mass,
+            radioactive_heating_rate=eps_dot,
+            opacity_mean=opacity_mean,
+            temperature_proxy=temp_proxy,
+            density_proxy=rho_proxy,
+            r_process_active=r_proc_active
         )
+        self._cached_state = state
+        self._classification_dirty = False
+        return state

@@ -1,5 +1,5 @@
 """
-Test suite for GW170817 Demo Director & Presentation Playback (Task 017 & Task 021).
+Test suite for GW170817 Demo Director & Presentation Playback (Task 017, Task 021, Task 022).
 """
 import sys
 sys.path.insert(0, '.')
@@ -10,7 +10,7 @@ from gw170817.simulation.demo_director import DemoDirector, DemoStage, PlaybackM
 
 
 def test_demo_director():
-    print("=== TASK 017 & 021 DEMO DIRECTOR TEST ===")
+    print("=== TASK 017, 021 & 022 DEMO DIRECTOR TEST ===")
 
     config = SimConfig(mode="DEV", seed=42)
     director = DemoDirector(config=config)
@@ -24,15 +24,15 @@ def test_demo_director():
     assert director.progress == 0.0
     print("1. reset returns to IDLE: PASS")
 
-    # 2. Start enters INSPIRAL (Demo starts near -12.0 s event_time)
+    # 2. Start enters INSPIRAL (Demo starts near -5.0 s event_time)
     st_start = director.start()
     assert director.current_stage == "INSPIRAL"
     assert director.stage_enum == DemoStage.INSPIRAL
     assert director.is_running
     assert not director.is_paused
-    assert abs(st_start.event_time - (-12.0)) < 0.5, f"Expected event_time ~ -12 s, got {st_start.event_time}"
-    assert 50.0 <= st_start.gw_frequency <= 56.0, f"Expected f_gw ~ 53.5 Hz, got {st_start.gw_frequency}"
-    print("2. start enters INSPIRAL near -12.0 s: PASS")
+    assert abs(st_start.event_time - (-5.0)) < 0.5, f"Expected event_time ~ -5 s, got {st_start.event_time}"
+    assert 70.0 <= st_start.gw_frequency <= 76.0, f"Expected f_gw ~ 72.4 Hz, got {st_start.gw_frequency}"
+    print("2. start enters INSPIRAL near -5.0 s: PASS")
 
     # 3. Pause/Resume works
     director.pause()
@@ -55,23 +55,23 @@ def test_demo_director():
     assert director.current_stage == "INSPIRAL"
     print("5. previous_stage moves backward: PASS")
 
-    # 6. All six presentation stages are reachable
+    # 6. All four presentation stages are reachable
     director.reset()
     visited_stages = []
     director.start()
     visited_stages.append(director.current_stage)
-    for _ in range(5):
+    for _ in range(3):
         st = director.next_stage()
         visited_stages.append(director.current_stage)
 
-    expected_stages = ["INSPIRAL", "LATE_INSPIRAL", "MERGER", "GRB", "KILONOVA", "AFTERGLOW"]
+    expected_stages = ["INSPIRAL", "LATE_INSPIRAL", "MERGER", "RINGDOWN"]
     assert visited_stages == expected_stages, f"Expected {expected_stages}, got {visited_stages}"
-    print("6. all six stages reachable: PASS")
+    print("6. all four stages reachable: PASS")
 
     # 7. Progress remains in [0.0, 1.0]
     director.reset()
     director.start()
-    for dt in [0.5, 2.0, 5.0, 10.0]:
+    for dt in [0.1, 0.5, 1.0, 2.0]:
         director.update(dt)
         p_overall = director.progress
         p_stage = director.stage_progress
@@ -132,19 +132,34 @@ def test_demo_director():
     # 12. No NaN/Inf in director state
     director.reset()
     director.start()
-    for _ in range(6):
+    for _ in range(4):
         summary = director.summary_dict()
         for k, v in summary.items():
             if isinstance(v, float):
                 assert np.isfinite(v), f"Non-finite summary value for {k}: {v}"
-        st_ev = director.update(1.0)
+        st_ev = director.update(0.5)
         for k, v in st_ev.__dict__.items():
             if isinstance(v, float):
                 assert np.isfinite(v), f"Non-finite event state value for {k}: {v}"
 
     print("12. no NaN/Inf in director state: PASS")
 
-    print("\nALL TASK 017 & 021 DEMO DIRECTOR CHECKS PASSED SUCCESSFULLY!")
+    # 13. disk_progress property evolution across presentation checkpoints
+    director.reset()
+    assert hasattr(director, "disk_progress"), "director must have disk_progress property"
+    assert director.disk_progress == 0.0, f"Expected 0.0 before merger, got {director.disk_progress}"
+
+    director.jump_to_stage_index(0)  # INSPIRAL (t_pres = 0.0)
+    assert director.disk_progress == 0.0
+
+    director.jump_to_stage_index(2)  # MERGER (t_pres = 6.0)
+    assert director.disk_progress == 0.0
+
+    director.jump_to_stage_index(3)  # RINGDOWN (t_pres = 9.0)
+    assert 0.7 <= director.disk_progress <= 0.95, f"Expected disk_progress ~ 0.84 at RINGDOWN stage, got {director.disk_progress}"
+    print("13. disk_progress property evolution across checkpoints: PASS")
+
+    print("\nALL TASK 017, 021 & 022 DEMO DIRECTOR CHECKS PASSED SUCCESSFULLY!")
 
 
 if __name__ == "__main__":

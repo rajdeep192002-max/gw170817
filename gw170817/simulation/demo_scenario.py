@@ -3,7 +3,7 @@ GW170817 Multi-Messenger Demonstration Scenario Manager.
 
 REDUCED-ORDER APPROXIMATION / SCIENTIFIC TRANSPARENCY:
 Provides deterministic checkpoint jumps across the single continuous multi-messenger timeline
-(-12.0 s Inspiral -> Merger -> +1.7 s GRB prompt delay -> Kilonova -> +150 d Afterglow peak)
+(-5.0 s Inspiral -> Merger -> +1.7 s GRB prompt delay -> Kilonova -> +150 d Afterglow peak)
 to showcase the reduced-order simulation capabilities.
 Preserves waveform buffer history and event clock continuity across stage jumps.
 """
@@ -19,10 +19,10 @@ class DemoScenario:
     """
 
     CHECKPOINTS = {
-        "INSPIRAL_START":   "Initial inspiral phase (t = -12.0 s, ~233.5 km separation)",
-        "INSPIRAL_MID":     "Mid inspiral phase (t = -6.0 s, ~185.0 km separation)",
-        "INSPIRAL_LATE":    "Late inspiral regime (t = -2.0 s, ~132.0 km separation)",
-        "FINAL_APPROACH":   "Final approach (t = -0.5 s, ~78.0 km separation)",
+        "INSPIRAL_START":   "Initial inspiral phase (t = -5.0 s, ~173.0 km separation)",
+        "INSPIRAL_MID":     "Mid inspiral phase (t = -3.0 s, ~150.0 km separation)",
+        "INSPIRAL_LATE":    "Late inspiral regime (t = -1.0 s, ~105.0 km separation)",
+        "FINAL_APPROACH":   "Final approach (t = -0.3 s, ~65.0 km separation)",
         "MERGER_DEMO":      "BNS Merger contact regime (t = 0.0 s)",
         "GRB_PROMPT":       "Prompt GRB 170817A trigger (+1.74 s delay after merger)",
         "EARLY_KILONOVA":   "Early kilonova thermal diffusion (+1.0 day post-merger)",
@@ -59,16 +59,16 @@ class DemoScenario:
             buf_backup = self.coordinator.engine.waveform_buffer
 
         if name == "INSPIRAL_START":
-            self.coordinator.engine.set_inspiral_time(12.0)
+            self.coordinator.engine.set_inspiral_time(5.0)
             st = self.coordinator._update_event_state()
         elif name == "INSPIRAL_MID":
-            self.coordinator.engine.set_inspiral_time(6.0)
+            self.coordinator.engine.set_inspiral_time(3.0)
             st = self.coordinator._update_event_state()
         elif name == "INSPIRAL_LATE":
-            self.coordinator.engine.set_inspiral_time(2.0)
+            self.coordinator.engine.set_inspiral_time(1.0)
             st = self.coordinator._update_event_state()
         elif name == "FINAL_APPROACH":
-            self.coordinator.engine.set_inspiral_time(0.5)
+            self.coordinator.engine.set_inspiral_time(0.3)
             st = self.coordinator._update_event_state()
         elif name == "MERGER_DEMO":
             self.coordinator.jump_to_demo_phase(f_gw=1200.0, separation=30.0e3)

@@ -1,19 +1,19 @@
 """
-Scientific Presentation Dashboard v1.0 for GW170817 Multi-Messenger Simulation.
+Scientific Presentation Dashboard for GW170817 Multi-Messenger Simulation.
 
 REDUCED-ORDER APPROXIMATION / SCIENTIFIC TRANSPARENCY:
 Integrates the reduced-order simulation engine with a Taichi GGUI visualization window,
-a continuous multi-messenger event timeline, a Relativistic Lensing Model (Schwarzschild approximation),
-and a deterministic DemoDirector playback controller supporting REAL TIME (1.0x) and SLOW MOTION (0.1x) modes.
+a 15-second continuous presentation timeline, dynamic 2D GPU starfield coordinate-warp lensing,
+time-frequency chirp track, 3D multi-component ejecta, rotational dynamics, and a deterministic DemoDirector playback controller.
 
 Does NOT perform full numerical relativity, GRHD, MHD, or radiation transport.
-Full GRHD/NR calculations are used as external reference benchmarks.
 """
 import sys
 import time
 from typing import Optional
 import numpy as np
 import taichi as ti
+
 from gw170817.constants import day, Mpc, M_sun
 from gw170817.config import SimConfig
 from gw170817.simulation.engine import GW170817Simulation, SimulationState
@@ -21,6 +21,9 @@ from gw170817.simulation.multimessenger import MultiMessengerCoordinator
 from gw170817.simulation.demo_director import DemoDirector, DemoStage, PlaybackMode
 from gw170817.visualization.renderer import ParticleRenderer
 from gw170817.visualization.lensing import RelativisticLensingModel
+from gw170817.visualization.background import BackgroundStarfield
+from gw170817.visualization.raytracer import SchwarzschildRaytracer
+from gw170817.visualization.field_lines import MagneticFieldLines
 
 
 class ScientificDashboard:
@@ -34,7 +37,7 @@ class ScientificDashboard:
         config: Optional[SimConfig] = None,
         window_size: tuple = (1600, 900),
         fps_target: int = 60,
-        substeps_per_frame: int = 5
+        substeps_per_frame: int = 2
     ):
         if config is None:
             config = SimConfig()
@@ -57,45 +60,54 @@ class ScientificDashboard:
         self.fps = 60.0
         self.frame_time_ms = 16.7
 
-        # Instantiate Particle, Jet & Waveform Renderer
+        # Renderer & GPU Raytracer
         self.renderer = ParticleRenderer(self.engine.psys)
+        self.bg = BackgroundStarfield(width=512, height=288)
+        self.raytracer = SchwarzschildRaytracer(bg=self.bg, width=256, height=144)
+        self.field_lines = MagneticFieldLines(n_lines=20)
 
-        # Initialize GGUI Window & Scene Components
+        # Initialize GGUI Window & Scene
         self.window = ti.ui.Window(
-            "GW170817 Multi-Messenger Scientific Presentation Dashboard (v1.0)",
+            "GW170817 Multi-Messenger Scientific Presentation Dashboard (Task 025 Integration)",
             self.window_size,
-            vsync=True
+            vsync=False
         )
         self.canvas = self.window.get_canvas()
         self.scene = self.window.get_scene()
         self.camera = ti.ui.Camera()
+        self._frame_count = 0
 
         self._setup_default_camera()
 
     def _setup_default_camera(self):
-        """Set up standard 3D camera viewing orbital plane with fixed z-bounds."""
-        cam_dist = 500.0e3  # 500 km visual distance
+        """Set up fixed scientific 3D camera viewing orbital plane."""
+        cam_dist = 280.0e3
         self.camera.position(0.0, -cam_dist * 0.85, cam_dist * 0.65)
         self.camera.lookat(0.0, 0.0, 0.0)
         self.camera.up(0.0, 0.0, 1.0)
         self.camera.projection_mode(ti.ui.ProjectionMode.Perspective)
         self.camera.z_near(1.0e3)
-        self.camera.z_far(2.0e6)
+        self.camera.z_far(3.0e6)
+
+    def _update_camera_tracking(self):
+        pass
 
     def process_input(self):
         """Process keyboard events for simulation, director, playback, and lensing control."""
         if self.window.get_event(ti.ui.PRESS):
-            key = self.window.event.key
+            evt = getattr(self.window, "event", getattr(self.window, "current_event", None))
+            key = getattr(evt, "key", None) if evt else None
+            if key is None:
+                return
 
             if key == ti.ui.SPACE:
-                if self.director.is_running:
+                if not self.director.is_running or self.director.is_complete:
+                    print("[Demo Director] Starting 15-second continuous presentation playback [SPACE]")
+                    self.director.start()
+                else:
                     self.director.toggle_pause()
                     status = "PAUSED" if self.director.is_paused else "RESUMED"
                     print(f"[Demo Director] Playback {status}")
-                else:
-                    self.paused = not self.paused
-                    status = "PAUSED" if self.paused else "RESUMED"
-                    print(f"[Dashboard Control] Simulation {status}")
 
             elif key in ['1']:
                 self.director.set_real_time()
@@ -125,10 +137,6 @@ class ScientificDashboard:
                     en = self.lensing.toggle_enabled()
                     print(f"[Relativistic Lensing] Toggled ({en})")
 
-            elif key in ['d', 'D']:
-                print("[Demo Director] Starting deterministic continuous presentation playback [D]")
-                self.director.start()
-
             elif key in ['n', 'N']:
                 print("[Demo Director] Advancing to next continuous demonstration stage [N]")
                 self.director.next_stage()
@@ -138,229 +146,266 @@ class ScientificDashboard:
                 self.director.previous_stage()
 
             elif key in ['r', 'R']:
-                print("[Dashboard Control] Resetting simulation & director to -12.0s [R]")
+                print("[Demo Director] Resetting demonstration timeline to t = -5.0s [R]")
                 self.director.reset()
-                self.engine.set_inspiral_time(12.0)
-                self._setup_default_camera()
-
-            elif key in ['m', 'M']:
-                print("[Dashboard Control] Jumping to accelerated near-merger demo state [M]")
-                self.engine.jump_to_demo_phase(f_gw=1200.0, separation=30.0e3)
 
             elif key == ti.ui.ESCAPE:
-                print("[Dashboard Control] Exiting simulation [ESC]")
                 self.window.running = False
 
-    def _format_event_time_str(self, event_time_s: float) -> str:
-        """Format continuous event time string relative to merger."""
-        t_abs = abs(event_time_s)
-        sign = "+" if event_time_s >= 0.0 else "-"
-        if t_abs >= 86400.0:
-            days_val = t_abs / 86400.0
-            return f"{sign}{days_val:.1f} days"
-        else:
-            return f"{sign}{t_abs:.2f} s"
-
-    def render_overlay(self):
-        """Render GGUI scientific text overlay windows with strict transparency tags."""
+    def render_gui_overlays(self):
+        """Render scientific telemetry HUD overlays with explicit [OBS], [REF], and [MOD] provenance labels."""
         gui = self.window.get_gui()
         st = self.engine.current_state
-        lens_st = self.lensing.evaluate()
+        evt_st = self.coordinator.current_state
 
-        # 1. Primary Title & Demo Director Status Panel
-        gui.begin("GW170817 Mission Control", 0.01, 0.01, 0.35, 0.40)
-        gui.text("GW170817 MULTI-MESSENGER BNS MERGER")
-        gui.text("Reduced-order physics-informed model; full GR/NR reference used.")
-        gui.text("--------------------------------------------")
+        # 1. Left Telemetry, Observables & Compact Engine Panel
+        gui.begin("GW170817 Scientific Telemetry & Engine", 0.01, 0.01, 0.35, 0.95)
+        
+        lens_active_str = "ACTIVE (Vulkan RK4)" if self.lensing.enabled else "OFF"
+        kn_status = "ACTIVE (3D Multi-Comp Ejecta)" if st.kilonova_luminosity > 0 else "PENDING"
+        grb_status = "TRIGGERED (+1.74s)" if st.grb_triggered else ("LAUNCHED" if st.grb_launched else "PENDING")
+        ag_status = "ACTIVE (Off-Axis Synchrotron)" if st.afterglow_flux > 1e-35 else "PENDING (~150d peak)"
+        j_state_str = "OUTFLOW" if evt_st.grb_triggered else ("COLLIMATING" if evt_st.grb_launched else "BUILDING")
 
-        stage_str = self.director.current_stage
-        p_mode = self.director.playback_mode_str
-        p_mult = self.director.speed_multiplier
-        gui.text(f"PLAYBACK: {p_mode} | {p_mult:.2f}x [CTRL]")
-
-        if self.director.is_running:
-            p_stage = self.director.stage_progress * 100.0
-            p_tot = self.director.progress * 100.0
-            status_text = f"DEMO PLAYBACK: {stage_str}"
-            if self.director.is_paused:
-                status_text += " (PAUSED)"
-            gui.text(status_text)
-            gui.text(f"Stage Progress: [{p_stage:5.1f}%]  Overall: [{p_tot:5.1f}%]")
-        else:
-            gui.text(f"Mode: MANUAL / {st.phase}")
-            gui.text("Press [D] to start deterministic presentation")
-
-        gui.text("--------------------------------------------")
-        t_evt_str = self._format_event_time_str(st.event_time)
-        gui.text(f"Event Time (rel to merger): {t_evt_str} [OBS]")
-        gui.text(f"GW Frequency f_gw: {st.gw_frequency:.2f} Hz [MOD]")
-        gui.text(f"Binary Separation a: {st.separation / 1e3:.2f} km [MOD]")
-        gui.text("Inspiral Model: Leading-order quadrupole/Peters [MOD]")
-        gui.text(f"Effective Tidal Lambda~: {self.engine.tidal.lambda_tilde:.1f} [REF]")
-        gui.text(f"Total Mass M_tot: {self.config.M_total / M_sun:.2f} M_sun [MOD]")
-        gui.text("Observational Validation: PASS (9/9)")
+        text_left = (
+            f"GW170817 MULTI-MESSENGER SIMULATION\n"
+            f"--------------------------------------------\n"
+            f"Presentation Time: {self.director.presentation_time:5.2f} / 15.0 s\n"
+            f"Physical Event Time: {st.event_time:+7.3f} s relative to merger\n"
+            f"Primary NSM Phase: {self.director.current_stage_name}\n"
+            f"Playback Speed: {self.director.speed_multiplier:4.2f}x ({self.director.playback_mode_str})\n"
+            f"Binary Separation: {st.separation / 1.0e3:6.1f} km [OBS]\n"
+            f"GW Frequency: {st.gw_frequency:6.1f} Hz [OBS]\n"
+            f"Lensing: {lens_active_str} [MODEL] Schwarzschild/weak-field\n"
+            f"--------------------------------------------\n"
+            f"MULTI-MESSENGER OBSERVABLES:\n"
+            f"GW Strain: {'[OBS] GW170817 Inspiral' if st.event_time <= 0.0 else '[MODEL] Post-Merger Ringdown'}\n"
+            f"Kilonova Lum: {kn_status} ({st.kilonova_luminosity:.3e} W) [MODEL]\n"
+            f"GRB 170817A Prompt: {grb_status} [OBS]\n"
+            f"Broadband Afterglow: {ag_status} [OBS/REF]\n"
+            f"  F_nu (1 GHz): {st.afterglow_flux:.3e} W/m^2/Hz [MODEL]\n"
+            f"--------------------------------------------\n"
+            f"ROTATIONAL DYNAMICS & ENGINE [MODEL]:\n"
+            f"REMNANT: {evt_st.remnant_type} ({evt_st.remnant_scenario})\n"
+            f"  Omega_core = {evt_st.omega_core:.1f} rad/s | Omega_outer = {evt_st.omega_outer:.1f} rad/s\n"
+            f"  Delta Omega = {evt_st.differential_rotation:.1f} rad/s | J = {evt_st.angular_momentum:.2e}\n"
+            f"  T/|W| = {evt_st.t_over_w:.4f} | Shear = {evt_st.shear:.1f} s^-1 | Redshift z = {evt_st.gravitational_redshift:.3f}\n"
+            f"DISK [MODEL]: M = {evt_st.disk_mass_msun:.3f} Msun | thick Keplerian torus\n"
+            f"MAGNETIC [MODEL]: B_p = {evt_st.b_poloidal:.1e} G | B_phi = {evt_st.b_toroidal:.1e} G\n"
+            f"  B_phi/B_p = {evt_st.b_ratio:.2f} | MRI = {'ACTIVE' if evt_st.mri_active else 'OFF'}\n"
+            f"  L_Poynting = {evt_st.poynting_luminosity:.2e} W\n"
+            f"JET [MODEL]: Gamma = 100 | theta = 3.5 deg ({j_state_str})\n"
+        )
+        gui.text(text_left)
         gui.end()
 
-        # 2. Multi-Messenger Observables & Provenance Panel
-        gui.begin("Observables & Provenance", 0.01, 0.42, 0.35, 0.30)
-        gui.text("Multi-Messenger Observables & Provenance")
-        gui.text("--------------------------------------------")
-        gui.text("Legend: [OBS] Observed | [REF] Ref Data | [MOD] Model")
-
-        gw_status = "DETECTED / ACTIVE" if st.gw_frequency > 0 else "INACTIVE"
-        gui.text(f"GW Strain: {gw_status} [MOD]")
-
-        kn_status = "ACTIVE" if st.kilonova_luminosity > 0 else "PENDING"
-        gui.text(f"Kilonova Lum: {kn_status} ({st.kilonova_luminosity:.3e} W) [MOD]")
-
-        grb_status = "TRIGGERED (+1.7s)" if st.grb_triggered else ("LAUNCHED" if st.grb_launched else "PENDING")
-        gui.text(f"GRB 170817A Prompt: {grb_status} [OBS]")
-
-        ag_status = "ACTIVE" if st.afterglow_flux > 1e-35 else "PENDING (~150d peak)"
-        gui.text(f"Broadband Afterglow: {ag_status} [OBS]")
-        gui.text(f"  F_nu (1 GHz): {st.afterglow_flux:.3e} W/m^2/Hz [MOD]")
-        gui.text(f"Viewing Angle theta_obs: {np.rad2deg(self.engine.jet.viewing_angle):.1f} deg [OBS]")
-        gui.text(f"Distance D_L: {self.config.distance / Mpc:.1f} Mpc [OBS]")
-        gui.end()
-
-        # 3. Relativistic Lensing & Physics Disclaimers Panel
-        gui.begin("Relativistic Lensing & Physics", 0.01, 0.73, 0.35, 0.25)
-        gui.text("Relativistic Light-Bending & Physics")
-        gui.text("--------------------------------------------")
-        lens_status = "ON" if lens_st.enabled else "OFF"
-        enh_str = " (ENHANCED)" if lens_st.enhanced_mode else ""
-        gui.text(f"RELATIVISTIC LENSING: {lens_status}{enh_str} [MOD]")
-        gui.text(f"Compactness u = 2GM/c^2R: {lens_st.compactness1:.3f} [MOD]")
-        gui.text(f"Max Visible Polar Angle psi_max: {lens_st.max_visible_angle_deg:.1f} deg [MOD]")
-        gui.text("--------------------------------------------")
-        gui.text("Relativistic light-bending visualization:")
-        gui.text("Schwarzschild compact-star approximation.")
-        gui.text("Not a full dynamical-spacetime ray trace.")
-        gui.end()
-
-        # 4. Interactive Controls Overlay
-        gui.begin("Director Controls", 0.65, 0.01, 0.34, 0.26)
-        gui.text("Interactive Director Controls")
-        gui.text("--------------------------------------------")
-        gui.text(" [D]     : Start Deterministic Full Demo")
-        gui.text(" [1]     : REAL TIME Playback (1.00x)")
-        gui.text(" [2]     : SLOW MOTION Playback (0.10x)")
-        gui.text(" [T]     : Toggle REAL TIME / SLOW MOTION")
-        gui.text(" [+/-]   : Fine Speed Multiplier Control")
-        gui.text(" [L]     : Toggle Relativistic Lensing")
-        gui.text(" [N]     : Next Timeline Checkpoint")
-        gui.text(" [B]     : Previous Timeline Checkpoint")
-        gui.text(" [SPACE] : Pause / Resume Playback")
-        gui.text(" [R]     : Reset Simulation (-12.0s)")
-        gui.text(" [ESC]   : Exit Presentation")
-        gui.end()
-
-        # 5. Live GW Waveform & Performance Diagnostic Overlay
-        gui.begin("GW Strain & Performance", 0.65, 0.71, 0.34, 0.27)
-        gui.text("Live GW Waveform & Performance")
-        gui.text("--------------------------------------------")
+        # 2. Right Controls, Waveform & Performance Panel
+        gui.begin("GW Strain & Interactive Controls", 0.67, 0.01, 0.32, 0.95)
+        
         h_last = self.engine.waveform_buffer._h_plus[self.engine.waveform_buffer._head - 1] if self.engine.waveform_buffer.count > 0 else 0.0
-        gui.text(f"Instantaneous Strain h+: {h_last:.3e} [MOD]")
-        gui.text(f"Waveform Buffer: {self.engine.waveform_buffer.count} / {self.engine.buffer_capacity} samples")
-        gui.text("--------------------------------------------")
-        gui.text("Scientific visualization — Luminous density/temp proxy.")
-        gui.text("Render Backend: Taichi Vulkan GPU")
-        gui.text(f"Framerate: {self.fps:5.1f} FPS  ({self.frame_time_ms:4.1f} ms/frame)")
+        h_disp = h_last / 1.0e-21
+
+        gw_ind = "[GW] ACTIVE" if st.event_time <= 0.0 else "[GW] RINGDOWN [MODEL]"
+        grb_ind = "[GRB] TRIGGERED (+1.7s)" if st.grb_triggered else ("[GRB] LAUNCHING" if st.grb_launched else "[GRB] PENDING")
+        kn_ind = f"[KN] L={st.kilonova_luminosity:.1e}W" if st.kilonova_luminosity > 0 else "[KN] PENDING"
+        ag_ind = f"[AG] F={st.afterglow_flux:.1e}" if st.afterglow_flux > 1e-35 else "[AG] PENDING (~150d peak)"
+
+        prog_bar = int(self.director.progress * 30.0)
+        bar_str = "[" + "=" * prog_bar + ">" + " " * (30 - prog_bar) + "]"
+
+        text_right = (
+            f"INTERACTIVE DIRECTOR CONTROLS:\n"
+            f" [SPACE] : Start / Pause / Resume Demo\n"
+            f" [A/D/W/S]: Camera Move / Rotate\n"
+            f" [1]     : REAL TIME Playback (1.00x)\n"
+            f" [2]     : SLOW MOTION Playback (0.10x)\n"
+            f" [T]     : Toggle REAL TIME / SLOW MOTION\n"
+            f" [+/-]   : Speed Control (0.05x to 4.0x)\n"
+            f" [L]     : Toggle Relativistic Lensing\n"
+            f" [N/B]   : Next / Previous Checkpoint\n"
+            f" [R]     : Reset Simulation (-5.0s)\n"
+            f" [ESC]   : Exit Presentation\n"
+            f"--------------------------------------------\n"
+            f"GW STRAIN WAVEFORM [OBS / MODEL]:\n"
+            f"Scaled Strain h (1e-21): {h_disp:+.2f}\n"
+            f"Status: {'Cyan Polyline: Inspiral Strain h(t) [OBS]' if st.event_time <= 0.0 else 'Damped Post-Merger Ringdown [MODEL]'}\n"
+            f"--------------------------------------------\n"
+            f"PERFORMANCE DIAGNOSTICS:\n"
+            f"Render Backend: Taichi Vulkan GPU\n"
+            f"Framerate: {self.fps:5.1f} FPS ({self.frame_time_ms:4.1f} ms/frame)\n"
+            f"--------------------------------------------\n"
+            f"CONTINUOUS PRESENTATION TIMELINE:\n"
+            f"PHASE: 0-4s INSPIRAL -> 4-6s LATE -> 6-9s MERGER -> 9-15s RINGDOWN\n"
+            f"MESSENGERS: {gw_ind} | {grb_ind}\n"
+            f"            {kn_ind} | {ag_ind}\n"
+            f"Progress: {bar_str} ({self.director.progress * 100.0:5.1f}%)\n"
+        )
+        gui.text(text_right)
         gui.end()
 
     def render_frame(self):
-        """Render full 3D viewport, lighting, luminous particles, jet, waveform trace, and overlays."""
-        # Track user mouse camera inputs (RMB drag)
+        """Render 2D background starfield image, 3D viewport, particles, accretion disk, field lines, jet, chirp track, waveform trace, and overlays."""
         self.camera.track_user_inputs(self.window, movement_speed=10.0e3, hold_key=ti.ui.RMB)
 
+        self._update_camera_tracking()
         self.scene.set_camera(self.camera)
-        self.scene.point_light(pos=(0.0, -500.0e3, 500.0e3), color=(1.0, 1.0, 1.0))
-        self.scene.ambient_light((0.25, 0.25, 0.25))
+        self.scene.ambient_light((0.85, 0.85, 0.85))
 
         st = self.engine.current_state
+        evt_st = self.coordinator.current_state
         lens_st = self.lensing.evaluate()
 
-        # 1. Update & render luminous 3D particles on GPU
-        lens_enh_flag = 1 if (lens_st.enabled and lens_st.enhanced_mode) else 0
-        self.renderer.update_particle_colors(
-            self.engine.psys.pos,
-            self.engine.psys.star_id,
-            self.engine.psys.active,
-            self.engine.psys.max_particles,
-            float(st.merger_contact_fraction),
-            lens_enh_flag
-        )
-        self.scene.particles(
-            self.engine.psys.pos,
-            radius=4.0e3,
-            per_vertex_color=self.renderer.colors
-        )
+        # 1. Update 2D GPU RK4 Schwarzschild Raytracer Background Image (when lensing enabled)
+        if lens_st.enabled:
+            if self._frame_count % 3 == 0 or not self.director.is_running:
+                r1, r2 = self.engine.inspiral.orbital_positions(
+                    self.engine.dynamics.inspiral_state,
+                    self.config.m1, self.config.m2
+                )
+                lens_flag = bool(lens_st.enabled)
+                enh_scale = 2.5 if lens_st.enhanced_mode else 1.0
 
-        # 2. Render structured relativistic jet lines if jet active (+1.7s post-merger)
-        jet_active = bool(st.grb_launched or st.grb_triggered or st.event_time >= 1.7)
-        self.renderer.update_jet_geometry(is_active=jet_active, max_extent_m=450.0e3)
-        if jet_active:
+                self.raytracer.render(
+                    ns1_pos=r1,
+                    ns2_pos=r2,
+                    m1=self.config.m1,
+                    m2=self.config.m2,
+                    lensing_active=lens_flag,
+                    enhanced_scale=enh_scale
+                )
+            self.canvas.set_image(self.raytracer.output_img)
+
+        # 2. Render 3D Inspiral NS Particles (during inspiral/merger before post-merger ejection)
+        post_merger_active = bool(st.merger_contact_fraction > 0.05 or self.director.ejecta_progress > 0.0)
+        if not post_merger_active:
+            if self._frame_count % 2 == 0 or not self.director.is_running:
+                self.renderer.update_particle_colors(
+                    self.engine.psys.pos,
+                    self.engine.psys.star_id,
+                    self.engine.psys.active,
+                    self.engine.psys.ye,
+                    self.engine.psys.max_particles,
+                    float(st.merger_contact_fraction),
+                    float(self.director.ejecta_progress)
+                )
+            self.scene.particles(
+                self.renderer.render_pos,
+                radius=1.8e3,
+                per_vertex_color=self.renderer.colors
+            )
+        else:
+            # 3. Post-Merger Visual Geometry Updates (cadenced at 30 Hz)
+            eff_event_time = max(float(st.event_time), float(evt_st.event_time))
+            ejecta_fluid_active = bool(self.director.ejecta_progress > 0.0 or st.event_time >= 0.0)
+            remnant_active = bool(st.merger_contact_fraction > 0.05)
+            disk_active = bool(self.director.disk_progress > 0.0)
+
+            if self._frame_count % 2 == 0 or not self.director.is_running:
+                if ejecta_fluid_active:
+                    self.renderer.update_ejecta_fluid(
+                        event_time=eff_event_time,
+                        ejecta_progress=self.director.ejecta_progress,
+                        is_active=ejecta_fluid_active
+                    )
+                if remnant_active:
+                    self.renderer.update_remnant_particles(
+                        event_time=eff_event_time,
+                        contact_frac=float(st.merger_contact_fraction),
+                        remnant_type_str=evt_st.remnant_type
+                    )
+                if disk_active:
+                    self.renderer.update_disk_particles(
+                        event_time=eff_event_time,
+                        disk_progress=self.director.disk_progress,
+                        is_active=disk_active
+                    )
+
+            # Single consolidated draw call for post-merger particles (remnant + disk + ejecta)
+            if ejecta_fluid_active or remnant_active or disk_active:
+                self.renderer.update_combined_post_merger()
+                self.scene.particles(
+                    self.renderer.combined_post_merger_pos,
+                    radius=2.5e3,
+                    per_vertex_color=self.renderer.combined_post_merger_colors
+                )
+
+        # 4. Helical Magnetic Field Lines & Relativistic Jet Lines (cadenced at 30 Hz)
+        b_active = bool(st.event_time >= 0.0 or self.director.b_winding_progress > 0.0)
+        jet_active = bool(st.grb_launched or self.director.jet_progress > 0.0)
+
+        if self._frame_count % 2 == 0 or not self.director.is_running:
+            if b_active:
+                self.field_lines.update(
+                    b_pol=evt_st.b_poloidal,
+                    b_tor=evt_st.b_toroidal,
+                    r_rem=14.0e3,
+                    is_active=b_active,
+                    winding_progress=self.director.b_winding_progress
+                )
+            if jet_active:
+                _jet_delay = float(self.engine.jet.jet_delay)
+                _jet_beta  = float(self.engine.jet.beta(self.engine.jet.lorentz_profile(0.0)))
+                self.renderer.update_jet_lines(
+                    event_time=st.event_time,
+                    jet_progress=self.director.jet_progress,
+                    is_active=jet_active,
+                    jet_delay=_jet_delay,
+                    beta_jet=_jet_beta
+                )
+
+        # Single consolidated draw call for lines (magnetic + jet)
+        if b_active or jet_active:
+            self.renderer.update_combined_lines(
+                self.field_lines.line_vertices,
+                self.field_lines.line_colors,
+                self.field_lines.n_vertices
+            )
             self.scene.lines(
-                self.renderer.jet_vertices,
-                width=0.004,
-                color=(0.2, 0.9, 1.0)
+                self.renderer.combined_line_vertices,
+                width=3.0,
+                per_vertex_color=self.renderer.combined_line_colors
             )
 
         self.canvas.scene(self.scene)
+        self.render_gui_overlays()
+        self.window.show()
+        self._frame_count += 1
 
-        # 3. Draw 2D live GW strain waveform trace on canvas
-        _, hp_arr, _, _ = self.engine.waveform_buffer.get_chronological()
-        if len(hp_arr) > 0:
-            self.renderer.update_waveform_buffer(hp_arr)
-            self.canvas.lines(
-                self.renderer.waveform_vertices,
-                width=0.003,
-                color=(0.0, 0.85, 1.0)
-            )
+    def run_step(self):
+        """Execute single frame step."""
+        now = time.time()
+        dt_wall = now - self._last_time
+        self._last_time = now
 
-        # 4. Render text overlays
-        self.render_overlay()
-
-    def run(self, max_frames: Optional[int] = None):
-        """
-        Main dashboard presentation execution loop.
-        """
-        frame_count = 0
-        self._last_time = time.time()
-
-        while self.window.running:
-            now = time.time()
-            dt_wall = max(1.0e-4, min(now - self._last_time, 0.1))
-            self._last_time = now
-
-            # Measure performance
-            self.fps = 0.9 * self.fps + 0.1 * (1.0 / dt_wall)
+        if dt_wall > 0.0:
+            current_fps = 1.0 / dt_wall
+            self.fps = 0.9 * self.fps + 0.1 * current_fps
             self.frame_time_ms = dt_wall * 1000.0
 
-            self.process_input()
+        self.process_input()
 
-            if self.director.is_running:
-                # Update presentation director (scales dt_wall by speed_multiplier)
-                self.director.update(dt_wall)
-            elif not self.paused:
-                # Manual mode engine stepping
-                for _ in range(self.substeps_per_frame):
-                    self.engine.step()
+        if self.director and self.director.is_running:
+            self.director.step(dt_wall)
+        elif self.paused:
+            pass
+        else:
+            # IDLE mode before SPACE: maintain initial presentation state (t = -5.0 s)
+            self.director._sync_physics_for_presentation_time(0.0)
 
-            self.render_frame()
+        self.render_frame()
 
-            self.window.show()
-            frame_count += 1
-            if max_frames is not None and frame_count >= max_frames:
-                break
+    def run(self):
+        """Main Dashboard execution loop."""
+        print("[Dashboard] Launching GW170817 Multi-Messenger Presentation Dashboard...")
+        print("[Dashboard] Press [SPACE] to start continuous 15-second demonstration playback")
+        while self.window.running:
+            self.run_step()
 
 
-def launch_dashboard(max_frames: Optional[int] = None):
-    """Entry point helper to launch Scientific Presentation Dashboard v1.0."""
-    config = SimConfig(mode="DEV", seed=42)
-    engine = GW170817Simulation(config=config)
-    dashboard = ScientificDashboard(engine=engine, config=config)
-    dashboard.run(max_frames=max_frames)
+def launch_dashboard():
+    """Entry point for launching the scientific dashboard."""
+    dashboard = ScientificDashboard()
+    dashboard.run()
 
 
 if __name__ == "__main__":

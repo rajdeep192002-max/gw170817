@@ -1,52 +1,51 @@
 """
-Integrated GW170817 Reduced-Order Simulation Engine.
-
-REDUCED-ORDER APPROXIMATION:
-This engine integrates the project's reduced-order physics modules into a single deterministic simulation.
-It is NOT a full numerical relativity simulation, GRHD, neutrino transport, or full GRMHD calculation.
-The accelerated/demo transition to the merger regime is a demonstration mechanism, not a claim
-that the laptop directly resolved the complete astrophysical inspiral.
+Central Integrated Simulation Engine for GW170817.
+Orchestrates all physics modules, particle dynamics, and multi-messenger event timeline.
 """
 from dataclasses import dataclass
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Dict, Any
 import numpy as np
-from gw170817.constants import day, Mpc, M_sun
+
 from gw170817.config import SimConfig
-from gw170817.simulation.particles import initialize_taichi, ParticleSystem
-from gw170817.physics.inspiral import InspiralModel, InspiralState
-from gw170817.physics.gravitational_waves import GravitationalWaveModel, WaveformBuffer
+from gw170817.simulation.particles import ParticleSystem, initialize_taichi
+from gw170817.physics.inspiral import InspiralModel
 from gw170817.physics.tidal import TidalModel
 from gw170817.physics.merger import MergerModel
 from gw170817.simulation.merger_dynamics import MergerDynamics
-from gw170817.physics.ejecta import EjectaModel, EjectaState
-from gw170817.physics.kilonova import KilonovaModel, KilonovaState
-from gw170817.physics.jet import StructuredJetModel, JetState
-from gw170817.physics.afterglow import AfterglowModel, AfterglowState
-from gw170817.simulation.event_timeline import EventTimeline, EventPhase
+from gw170817.physics.rotation import RotationalModel
+from gw170817.physics.remnant import RemnantModel
+from gw170817.physics.disk import DiskModel
+from gw170817.physics.magnetic_field import MagneticFieldModel
+from gw170817.physics.neutrinos import NeutrinoModel
+from gw170817.physics.ejecta import EjectaModel
+from gw170817.physics.kilonova import KilonovaModel
+from gw170817.physics.jet import StructuredJetModel
+from gw170817.physics.afterglow import AfterglowModel
+from gw170817.simulation.event_timeline import EventTimeline
+from gw170817.physics.gravitational_waves import GravitationalWaveModel, WaveformBuffer
 
 
 @dataclass
 class SimulationState:
-    """Integrated instantaneous state of the GW170817 multi-messenger simulation."""
-    time: float                    # Engine cumulative elapsed simulation time [s]
-    elapsed_time: float            # Engine cumulative elapsed simulation time [s]
-    event_time: float              # Multi-messenger event time relative to merger [s] (0.0 = merger, <0 = inspiral)
+    """Comprehensive snapshot of simulation engine state."""
+    time: float                    # Engine cumulative simulation time [s]
+    elapsed_time: float            # Engine cumulative simulation time [s]
+    event_time: float              # Event time relative to merger [s] (0.0 = merger)
     step_count: int                # Total physics steps executed
-    phase: str                     # Current multi-messenger evolution phase (INSPIRAL, MERGER, etc.)
+    phase: str                     # Timeline phase ("INSPIRAL", "MERGER", etc.)
 
     gw_frequency: float            # Instantaneous GW frequency [Hz]
-    separation: float              # Orbital separation a [m]
-    orbital_phase: float           # Orbital phase phi [rad]
+    separation: float              # Binary separation a [m]
+    orbital_phase: float           # Binary orbital phase [rad]
 
     merger_contact_fraction: float # Contact fraction [0.0 to 1.0]
-    merger_started: bool           # True if merger regime entered
+    merger_started: bool           # True if contact/merger initiated
     merger_complete: bool          # True if compact remnant formed
 
     ejecta_mass: float             # Dynamically unbound ejecta mass [kg]
-    ejecta_fraction: float         # Ejecta mass fraction of total binary mass [0.0 to 1.0]
-    ejecta_mean_velocity: float    # Mass-weighted ejecta speed [m/s]
-
-    kilonova_luminosity: float     # Total kilonova bolometric luminosity [W]
+    ejecta_fraction: float         # Ejecta mass fraction of total binary mass
+    ejecta_mean_velocity: float    # Ejecta mean expansion velocity [m/s]
+    kilonova_luminosity: float     # Kilonova bolometric luminosity [W]
 
     grb_launched: bool             # True if relativistic jet launched
     grb_triggered: bool            # True if 1.7 s GW-GRB prompt delay elapsed
@@ -83,6 +82,11 @@ class GW170817Simulation:
         self.tidal = TidalModel(config)
         self.merger = MergerModel(config, self.tidal)
         self.dynamics = MergerDynamics(self.psys, self.inspiral, self.tidal, self.merger)
+        self.rotation = RotationalModel(config)
+        self.remnant = RemnantModel(config)
+        self.disk = DiskModel(config)
+        self.magnetic_field = MagneticFieldModel(config)
+        self.neutrinos = NeutrinoModel(config)
         self.ejecta = EjectaModel(config)
         self.kilonova = KilonovaModel(config)
         self.jet = StructuredJetModel(config)
@@ -100,7 +104,7 @@ class GW170817Simulation:
         self.elapsed_time = 0.0
         self.time = 0.0
         self.step_count = 0
-        self.ejecta_update_interval = 10  # Compute particle ejecta classification every 10 steps
+        self.ejecta_update_interval = 10
 
         self._post_merger_event_time = 0.0
         self.is_demo_phase = False
@@ -123,6 +127,11 @@ class GW170817Simulation:
         # Cache initial state
         self._update_cached_state()
 
+    @property
+    def current_state(self) -> SimulationState:
+        """Return currently cached SimulationState."""
+        return self._state
+
     def _compute_time_to_merger(self, f_gw: float) -> float:
         """Calculate remaining inspiral time to merger in seconds using Peters quadrupole formula."""
         if f_gw >= self.inspiral.f_max:
@@ -138,108 +147,102 @@ class GW170817Simulation:
     def _compute_event_time(self) -> float:
         """
         Compute simulation event time relative to merger [s].
-        - During inspiral (before merger start): event_time < 0.0 (t = - remaining time to merger)
-        - During / post merger: event_time >= 0.0 (t = time since merger)
         """
-        insp_state = self.dynamics.inspiral_state
-        merg_state = self.dynamics.merger_state
+        if self.is_demo_phase:
+            return self._post_merger_event_time
 
-        if merg_state.merger_started or self.is_demo_phase:
+        merg_st = self.dynamics.merger_state
+        if merg_st.merger_started or merg_st.merger_complete:
             return self._post_merger_event_time
         else:
-            t_rem = self._compute_time_to_merger(insp_state.f_gw)
-            return -t_rem
+            return -self._compute_time_to_merger(self.dynamics.inspiral_state.f_gw)
+
+    def set_inspiral_time(self, time_to_merger_s: float):
+        """
+        Jump inspiral physics directly to a target time-to-merger in seconds.
+        """
+        tau_target = max(0.0, float(time_to_merger_s))
+        c_coeff = getattr(self.inspiral, "_df_coeff", 0.0)
+        f_max = self.inspiral.f_max
+        if c_coeff > 0.0:
+            term = (f_max ** (-8.0 / 3.0)) + (8.0 * c_coeff / 3.0) * tau_target
+            f_target = float(term ** (-3.0 / 8.0))
+        else:
+            f_target = 40.0
+
+        f_clamped = min(f_max - 1.0, max(self.config.f_gw_start, f_target))
+        from gw170817.constants import G
+        a_target = (G * self.config.M_total / (np.pi * f_clamped)**2)**(1.0 / 3.0)
+
+        self.dynamics.inspiral_state.f_gw = f_clamped
+        self.dynamics.inspiral_state.orbital_frequency = f_clamped / 2.0
+        self.dynamics.inspiral_state.omega_orb = np.pi * f_clamped
+        self.dynamics.inspiral_state.separation = a_target
+        self.dynamics.inspiral_state.df_dt = self.inspiral._compute_df_dt(f_clamped)
+
+        self.dynamics.merger_state.merger_started = False
+        self.dynamics.merger_state.merger_complete = False
+        self.dynamics.merger_state.contact_fraction = 0.0
+
+        self._post_merger_event_time = -tau_target
+        self.is_demo_phase = False
+        self.dynamics.update_particles()
+        return self._update_cached_state()
 
     def jump_to_demo_phase(self, f_gw: float = 1200.0, separation: float = 30.0e3):
-        """
-        Accelerated demonstration state jump to near-merger regime.
-        Allows immediate visual & multi-messenger evaluation without requiring tiny-step integration.
-        
-        This is an accelerated demonstration state transition and is not a claim
-        that the full astrophysical inspiral was numerically resolved.
-        """
+        """Perform accelerated demo jump to near-merger state."""
+        self.dynamics.inspiral_state.f_gw = f_gw
+        self.dynamics.inspiral_state.orbital_frequency = f_gw / 2.0
+        self.dynamics.inspiral_state.omega_orb = np.pi * f_gw
+        self.dynamics.inspiral_state.separation = separation
+
+        self.dynamics.merger_state.merger_started = True
+        self.dynamics.merger_state.merger_complete = False
+        self.dynamics.merger_state.contact_fraction = 1.0
+        self.dynamics.v_clamp = 0.05
+
         self.is_demo_phase = True
         self._post_merger_event_time = 0.0
+        self.dynamics.update_particles()
+        return self._update_cached_state()
 
-        synthetic_state = InspiralState(
-            time=0.0,
-            f_gw=float(f_gw),
-            orbital_frequency=float(f_gw / 2.0),
-            omega_orb=float(np.pi * f_gw),
-            separation=float(separation),
-            orbital_phase=np.pi,
-            df_dt=self.inspiral._compute_df_dt(float(f_gw)),
-            chirp_mass=self.config.chirp_mass
-        )
+    def set_post_merger_event_time(self, t_seconds: float):
+        """Set post-merger event time in seconds."""
+        t_val = float(t_seconds)
+        self.is_demo_phase = True
+        self._post_merger_event_time = t_val
 
-        self.dynamics.inspiral_state = synthetic_state
-        self.dynamics.tidal_state = self.tidal.evaluate(synthetic_state)
-        self.dynamics.merger_state = self.merger.evaluate(synthetic_state)
+        self.dynamics.merger_state.merger_started = True
+        self.dynamics.merger_state.merger_complete = True
+        self.dynamics.merger_state.contact_fraction = 1.0
+        self.dynamics.v_clamp = min(0.40, 0.05 + 0.35 * (1.0 - np.exp(-max(0.0, t_val) / 0.1)))
 
-        # Synchronize particle state without performing an inspiral timestep that changes requested parameters
-        r1, r2 = self.inspiral.orbital_positions(synthetic_state, self.config.m1, self.config.m2)
-        v1, v2 = self.inspiral.orbital_velocities(synthetic_state, self.config.m1, self.config.m2)
-        eps1 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_1, 0.4)
-        eps2 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_2, 0.4)
-
-        self.dynamics._update_particles_kernel(
-            self.psys.n_particles_1,
-            self.psys.max_particles,
-            float(r1[0]), float(r1[1]), float(r1[2]),
-            float(r2[0]), float(r2[1]), float(r2[2]),
-            float(v1[0]), float(v1[1]), float(v1[2]),
-            float(v2[0]), float(v2[1]), float(v2[2]),
-            float(synthetic_state.orbital_phase),
-            float(synthetic_state.omega_orb),
-            float(eps1), float(eps2),
-            float(self.dynamics.merger_state.contact_fraction),
-            float(self.dynamics.v_clamp)
-        )
-
-        self._update_cached_state()
-
-    def set_inspiral_time(self, tau_rem: float, dt_phase: float = 0.0) -> SimulationState:
-        """
-        Set engine inspiral state to a physically consistent remaining time tau_rem [s] to merger
-        using exact inverse Peters quadrupole formula.
-        Does NOT alter dt_physics or modify physical equations.
-        """
-        tau_clamped = max(0.001, float(tau_rem))
-        c_coeff = self.inspiral._df_coeff
         f_max = self.inspiral.f_max
+        self.dynamics.inspiral_state.f_gw = f_max
+        self.dynamics.inspiral_state.orbital_frequency = f_max / 2.0
+        self.dynamics.inspiral_state.omega_orb = np.pi * f_max
+        self.dynamics.inspiral_state.separation = 20.0e3
 
-        # Exact inverse Peters radiation reaction formula for f_gw(tau)
-        f_gw_pow = (8.0 * c_coeff * tau_clamped / 3.0) + (f_max ** (-8.0 / 3.0))
-        f_gw = max(40.0, min(f_max, float(f_gw_pow ** (-3.0 / 8.0))))
-        separation = self.inspiral._compute_separation(f_gw)
+        self.dynamics.update_particles()
+        return self._update_cached_state()
 
-        old_phi = self.dynamics.inspiral_state.orbital_phase
-        new_phi = old_phi + np.pi * f_gw * max(0.0, float(dt_phase))
+    def set_synthetic_inspiral_state(
+        self,
+        r1: np.ndarray, r2: np.ndarray,
+        v1: np.ndarray, v2: np.ndarray,
+        synthetic_state
+    ):
+        """Inject explicit orbital state for visual timeline syncing."""
+        self.dynamics.inspiral_state.f_gw = float(synthetic_state.f_gw)
+        self.dynamics.inspiral_state.orbital_frequency = float(synthetic_state.orbital_frequency)
+        self.dynamics.inspiral_state.omega_orb = float(synthetic_state.omega_orb)
+        self.dynamics.inspiral_state.separation = float(synthetic_state.separation)
+        self.dynamics.inspiral_state.orbital_phase = float(synthetic_state.orbital_phase)
 
-        synthetic_state = InspiralState(
-            time=0.0,
-            f_gw=f_gw,
-            orbital_frequency=f_gw / 2.0,
-            omega_orb=np.pi * f_gw,
-            separation=separation,
-            orbital_phase=new_phi,
-            df_dt=self.inspiral._compute_df_dt(f_gw),
-            chirp_mass=self.config.chirp_mass
-        )
+        eps1 = getattr(synthetic_state, 'eps1', 0.0)
+        eps2 = getattr(synthetic_state, 'eps2', 0.0)
 
-        self.dynamics.inspiral_state = synthetic_state
-        self.dynamics.tidal_state = self.tidal.evaluate(synthetic_state)
-        self.dynamics.merger_state = self.merger.evaluate(synthetic_state)
-
-        # Synchronize particles
-        r1, r2 = self.inspiral.orbital_positions(synthetic_state, self.config.m1, self.config.m2)
-        v1, v2 = self.inspiral.orbital_velocities(synthetic_state, self.config.m1, self.config.m2)
-        eps1 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_1, 0.4)
-        eps2 = min(0.5 * self.dynamics.tidal_state.tidal_distortion_2, 0.4)
-
-        self.dynamics._update_particles_kernel(
-            self.psys.n_particles_1,
-            self.psys.max_particles,
+        self.psys.set_particle_positions_rigid(
             float(r1[0]), float(r1[1]), float(r1[2]),
             float(r2[0]), float(r2[1]), float(r2[2]),
             float(v1[0]), float(v1[1]), float(v1[2]),
@@ -261,22 +264,23 @@ class GW170817Simulation:
 
         event_time = self._compute_event_time()
 
-        # Phase from Timeline based on event time relative to merger
         phase = self.timeline.current_phase(event_time)
 
-        # Ejecta & Kilonova
-        if (self.step_count % self.ejecta_update_interval == 0) or (self.step_count == 0):
+        if self.step_count > 0 and (self.step_count % self.ejecta_update_interval == 0):
             diag_com = self.psys.compute_diagnostics_numpy()
             self.ejecta.classify(self.psys, diag_com['com_pos'], diag_com['com_vel'])
+
+        rem_state = self.remnant.evaluate(insp_state, event_time)
+        rot_state = self.rotation.evaluate(insp_state, rem_state, event_time)
+        disk_state = self.disk.evaluate(rem_state, event_time, rot_state)
+        mag_state = self.magnetic_field.evaluate(rem_state, disk_state, event_time, rot_state)
 
         ej_state = self.ejecta.compute_state(self.psys, max(0.0, event_time))
         kn_state = self.kilonova.evaluate(ej_state, max(0.0, event_time))
 
-        # Jet & Afterglow
         j_state = self.jet.evaluate(time=event_time, merger_state=merg_state)
         ag_state = self.afterglow.evaluate(time_seconds=max(0.0, event_time), jet_state=j_state)
 
-        # GW Waveform
         gw_sample = self.gw_model.sample(insp_state)
         self.waveform_buffer.append(gw_sample)
 
@@ -309,68 +313,28 @@ class GW170817Simulation:
         if dt is None:
             dt = self.config.dt_physics
 
-        dt_val = float(dt)
-        if dt_val <= 0.0 or not np.isfinite(dt_val):
-            raise ValueError(f"Step timestep dt must be strictly positive and finite, got {dt}")
-
-        self.elapsed_time += dt_val
-        self.time = self.elapsed_time
-        self.step_count += 1
-
-        # Advance particle & orbital dynamics
-        self.dynamics.step(dt_val)
+        self.dynamics.step(dt)
 
         if self.dynamics.merger_state.merger_started or self.is_demo_phase:
-            self._post_merger_event_time += dt_val
+            self._post_merger_event_time += dt
+
+        self.elapsed_time += dt
+        self.time += dt
+        self.step_count += 1
 
         return self._update_cached_state()
 
-    def run(
-        self,
-        duration: float,
-        dt: float = None,
-        callback: Optional[Callable[[SimulationState], None]] = None
-    ) -> SimulationState:
-        """
-        Run simulation for requested duration in seconds without duration overshoot.
-        Deterministic, bounded memory.
-        """
-        dur_val = float(duration)
-        if dur_val <= 0.0 or not np.isfinite(dur_val):
-            raise ValueError(f"Run duration must be strictly positive and finite, got {duration}")
-
+    def run(self, duration: float, dt: float = None) -> SimulationState:
+        """Run simulation for a total physical duration in seconds."""
+        if duration < 0.0:
+            raise ValueError(f"Duration must be non-negative, got {duration}")
+        if dt is not None and dt <= 0.0:
+            raise ValueError(f"Timestep dt must be positive, got {dt}")
         if dt is None:
             dt = self.config.dt_physics
-        else:
-            dt = float(dt)
-            if dt <= 0.0 or not np.isfinite(dt):
-                raise ValueError(f"Run timestep dt must be strictly positive and finite, got {dt}")
-
-        remaining = dur_val
-        eps = 1e-15
-        while remaining > eps:
-            step_dt = min(dt, remaining)
-            st = self.step(step_dt)
-            remaining -= step_dt
-            if callback is not None:
-                callback(st)
-
-        return self._state
-
-    @property
-    def current_state(self) -> SimulationState:
-        """Get current cached SimulationState."""
-        return self._state
-
-    def compute_diagnostics(self) -> Dict[str, Any]:
-        """Expose lightweight engine-level diagnostics."""
-        dyn_diag = self.dynamics.compute_diagnostics()
-        return {
-            "backend": self.backend,
-            "particle_count": self.psys.max_particles,
-            "simulation_time": self.elapsed_time,
-            "event_time": self._compute_event_time(),
-            "step_count": self.step_count,
-            "current_phase": self._state.phase,
-            "dynamics_diagnostics": dyn_diag
-        }
+        start_time = self.elapsed_time
+        target_time = start_time + duration
+        while self.elapsed_time < target_time - 1.0e-12:
+            step_dt = min(dt, target_time - self.elapsed_time)
+            self.step(step_dt)
+        return self.current_state

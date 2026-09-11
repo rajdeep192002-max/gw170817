@@ -16,9 +16,20 @@ class SimConfig:
     
     # Initial Frequencies
     f_gw_start: float = 40.0             # Initial GW frequency [Hz]
+    f_max: float = 1500.0                # Merger cut-off GW frequency [Hz]
     
     # Observer & Inclination
     inclination_deg: float = 20.0        # Inclination angle [deg]
+    
+    # Stellar & Physical Parameters
+    R_NS1: float = 11.5e3                # NS1 radius [m]
+    R_NS2: float = 11.5e3                # NS2 radius [m]
+    k2: float = 0.07                     # Tidal Love number
+    Lambda1: float = 292.0               # Tidal deformability NS1
+    Lambda2: float = 292.0               # Tidal deformability NS2
+    Lambda_tilde: float = 292.0          # Effective tidal deformability
+    REMNANT_MODEL: str = "GW170817_LIKE" # Scenario ("GW170817_LIKE", "PROMPT_BH_REFERENCE", "HMNS_REFERENCE")
+    HMNS_LIFETIME: float = 0.08          # HMNS lifetime before delayed collapse [s]
     
     # --- Timesteps [s] ---
     dt_physics: float = 1.0e-4           # Physics simulation timestep [s]
@@ -28,7 +39,7 @@ class SimConfig:
     # --- Particle Resolution Modes ---
     DEV_PARTICLES: int = 20_000
     NORMAL_PARTICLES: int = 75_000
-    HIGH_PARTICLES: int = 150_000
+    HIGH_PARTICLES: int = 100_000
     
     # Active mode & quality
     mode: str = "DEV"                    # Options: "DEV", "NORMAL", "HIGH"

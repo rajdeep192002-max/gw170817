@@ -1,4 +1,4 @@
-﻿"""
+"""
 Test suite for multi-messenger GW170817 event timeline and coordinator (Task 012).
 """
 import sys
@@ -46,10 +46,11 @@ def test_event_timeline():
     print("\nPhase checks:")
     phases_to_check = [
         (-10.0, "INSPIRAL"),
+        (-0.5, "LATE_INSPIRAL"),
         (0.0, "MERGER"),
-        (1.0, "POST_MERGER"),
-        (1.7, "GRB"),
-        (150.0 * day, "AFTERGLOW")
+        (1.0, "RINGDOWN"),
+        (1.7, "RINGDOWN"),
+        (150.0 * day, "RINGDOWN")
     ]
     for t_val, expected_phase in phases_to_check:
         actual_phase = timeline.current_phase(t_val)

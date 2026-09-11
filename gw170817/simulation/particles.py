@@ -1,4 +1,4 @@
-﻿"""
+"""
 Taichi particle system for GW170817 binary neutron star simulation.
 Provides backend initialization with Vulkan preference and CPU fallback,
 and preallocated particle state fields.
@@ -14,14 +14,30 @@ from gw170817.constants import G, M_sun
 from gw170817.config import SimConfig
 
 
+# Module-level guard: Taichi must only be initialized once per process.
+# Repeated ti.init() calls destroy the runtime and invalidate existing fields,
+# which causes access violations on Windows Vulkan when prior field references
+# (from earlier test objects) are still alive.
+_taichi_initialized: bool = False
+_taichi_backend: str = "cpu"
+
+
 def initialize_taichi(preference: str = "vulkan") -> str:
     """
     Initialize Taichi with backend fallback.
     Tries Vulkan first if preferred, falling back to CPU on failure.
 
+    Guarded: only the first call per process actually runs ti.init().
+    Subsequent calls return the previously selected backend.
+
     Returns:
         str: Name of the active backend ("vulkan" or "cpu").
     """
+    global _taichi_initialized, _taichi_backend
+
+    if _taichi_initialized:
+        return _taichi_backend
+
     preference = preference.lower()
     selected_backend = "cpu"
 
@@ -37,6 +53,8 @@ def initialize_taichi(preference: str = "vulkan") -> str:
         ti.init(arch=ti.cpu, log_level=ti.WARN)
         selected_backend = "cpu"
 
+    _taichi_initialized = True
+    _taichi_backend = selected_backend
     return selected_backend
 
 
@@ -61,6 +79,7 @@ class ParticleSystem:
         self.mass = ti.field(dtype=ti.f32, shape=self.max_particles)
         self.star_id = ti.field(dtype=ti.i32, shape=self.max_particles)  # 0: NS1, 1: NS2
         self.active = ti.field(dtype=ti.i32, shape=self.max_particles)   # 1: active, 0: inactive
+        self.ye = ti.field(dtype=ti.f32, shape=self.max_particles)       # Electron fraction (0.15 red, 0.25 purple, 0.35 blue)
 
         # Global scalars
         self.n_active = ti.field(dtype=ti.i32, shape=())
@@ -120,8 +139,7 @@ class ParticleSystem:
         seed: ti.i32
     ):
         """
-        Taichi kernel to initialize particle positions, velocities, masses, and star IDs.
-        No Python loops involved.
+        Taichi kernel to initialize particle positions, velocities, masses, star IDs, and Ye values.
         """
         two_pi = 6.283185307179586
 
@@ -144,6 +162,15 @@ class ParticleSystem:
             self.star_id[i] = 0
             self.active[i] = 1
 
+            # Assign Ye based on 3D angular distribution:
+            abs_cos = ti.abs(cos_theta)
+            if abs_cos > 0.6:
+                self.ye[i] = 0.35  # Polar blue component (lanthanide-poor)
+            elif abs_cos > 0.3:
+                self.ye[i] = 0.25  # Intermediate purple component
+            else:
+                self.ye[i] = 0.15  # Equatorial red component (lanthanide-rich)
+
         # --- NS2 Particles ---
         for i in range(n1, n_total):
             u = ti.random(ti.f32)
@@ -161,6 +188,14 @@ class ParticleSystem:
             self.mass[i] = pmass2
             self.star_id[i] = 1
             self.active[i] = 1
+
+            abs_cos = ti.abs(cos_theta)
+            if abs_cos > 0.6:
+                self.ye[i] = 0.35
+            elif abs_cos > 0.3:
+                self.ye[i] = 0.25
+            else:
+                self.ye[i] = 0.15
 
     def compute_diagnostics_numpy(self) -> dict:
         """

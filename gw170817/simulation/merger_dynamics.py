@@ -1,4 +1,4 @@
-﻿"""
+"""
 Taichi reduced-order BNS merger particle dynamics for GW170817.
 
 REDUCED-ORDER APPROXIMATION:
@@ -94,28 +94,16 @@ class MergerDynamics:
         for i in range(n1, n_total):
             self.local_offset[i] = self.psys.pos[i] - com2
 
-    def step(self, dt: float):
-        """Advance simulation physics by dt seconds."""
-        # 1. Advance inspiral model
-        self.inspiral_state = self.inspiral_model.step(self.inspiral_state, dt)
-
-        # 2. Evaluate tidal and merger states
-        self.tidal_state = self.tidal_model.evaluate(self.inspiral_state)
-        self.merger_state = self.merger_model.evaluate(self.inspiral_state)
-
-        # 3. Calculate star CoM positions and bulk velocities
+    def update_particles(self):
+        """Update particle positions and velocities from current inspiral and merger states."""
         r1, r2 = self.inspiral_model.orbital_positions(
             self.inspiral_state, self.config.m1, self.config.m2
         )
         v1, v2 = self.inspiral_model.orbital_velocities(
             self.inspiral_state, self.config.m1, self.config.m2
         )
-
-        # Max visual tidal deformation factor (clamped)
         eps1 = min(0.5 * self.tidal_state.tidal_distortion_1, 0.4)
         eps2 = min(0.5 * self.tidal_state.tidal_distortion_2, 0.4)
-
-        # 4. Invoke Taichi kernel to update particle positions and velocities
         self._update_particles_kernel(
             self.psys.n_particles_1,
             self.psys.max_particles,
@@ -129,6 +117,18 @@ class MergerDynamics:
             float(self.merger_state.contact_fraction),
             float(self.v_clamp)
         )
+
+    def step(self, dt: float):
+        """Advance simulation physics by dt seconds."""
+        # 1. Advance inspiral model
+        self.inspiral_state = self.inspiral_model.step(self.inspiral_state, dt)
+
+        # 2. Evaluate tidal and merger states
+        self.tidal_state = self.tidal_model.evaluate(self.inspiral_state)
+        self.merger_state = self.merger_model.evaluate(self.inspiral_state)
+
+        # 3. Update particle positions and velocities
+        self.update_particles()
 
     @ti.kernel
     def _update_particles_kernel(

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Gravitational-wave waveform model and rolling buffer for GW170817.
 
 REDUCED-ORDER APPROXIMATION:
@@ -75,13 +75,21 @@ class GravitationalWaveModel:
         Calculate instantaneous h_plus and h_cross.
         h_+ = A * ((1 + cos(i)^2)/2) * cos(2 * phi)
         h_x = A * cos(i) * sin(2 * phi)
+        Includes exponential post-merger ringdown decay to zero to prevent flat tails.
         """
         amp = self.characteristic_strain(state)
         phi = state.orbital_phase
         two_phi = 2.0 * phi
 
-        h_plus = amp * self._plus_factor * np.cos(two_phi)
-        h_cross = amp * self._cross_factor * np.sin(two_phi)
+        # Post-merger ringdown suppression if f_gw >= f_max or time >= 0
+        ringdown = 1.0
+        f_max = getattr(self.config, "f_max", 1500.0)
+        if state.f_gw >= f_max or state.time >= 0.0:
+            t_post = max(0.0, state.time)
+            ringdown = np.exp(-t_post / 0.001)
+
+        h_plus = amp * self._plus_factor * np.cos(two_phi) * ringdown
+        h_cross = amp * self._cross_factor * np.sin(two_phi) * ringdown
 
         return float(h_plus), float(h_cross)
 

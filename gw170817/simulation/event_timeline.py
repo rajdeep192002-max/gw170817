@@ -1,4 +1,4 @@
-﻿"""
+"""
 Multi-messenger GW170817 event timeline and coordination layer.
 
 REDUCED-ORDER APPROXIMATION:
@@ -21,12 +21,11 @@ from gw170817.config import SimConfig
 
 
 class EventPhase(Enum):
-    """Simulation-relative multi-messenger evolution phases."""
+    """Simulation-relative primary physical NSM evolution phases."""
     INSPIRAL = "INSPIRAL"
+    LATE_INSPIRAL = "LATE_INSPIRAL"
     MERGER = "MERGER"
-    POST_MERGER = "POST_MERGER"
-    GRB = "GRB"
-    AFTERGLOW = "AFTERGLOW"
+    RINGDOWN = "RINGDOWN"
 
 
 @dataclass(frozen=True)
@@ -104,27 +103,21 @@ class EventTimeline:
 
     def current_phase(self, time_seconds: float) -> str:
         """
-        Classify deterministic multi-messenger phase based on simulation time t [s]:
-        - t < 0.0           -> INSPIRAL
-        - t == 0.0          -> MERGER
-        - 0.0 < t < 1.7     -> POST_MERGER
-        - 1.7 <= t < 3.7    -> GRB
-        - 3.7 <= t < 150d   -> POST_MERGER
-        - t >= 150.0 days   -> AFTERGLOW
+        Classify deterministic primary NSM physical phase based on simulation time t [s]:
+        - t < -1.0 s          -> INSPIRAL
+        - -1.0 <= t < 0.0 s   -> LATE_INSPIRAL
+        - 0.0 <= t <= 0.060 s -> MERGER (dynamical merger phase)
+        - t > 0.060 s         -> RINGDOWN
         """
         t = float(time_seconds)
-        if t < 0.0:
+        if t < -1.0:
             return EventPhase.INSPIRAL.value
-        elif t == 0.0:
+        elif -1.0 <= t < 0.0:
+            return EventPhase.LATE_INSPIRAL.value
+        elif 0.0 <= t <= 0.060:
             return EventPhase.MERGER.value
-        elif 0.0 < t < self.grb_time:
-            return EventPhase.POST_MERGER.value
-        elif self.grb_time <= t < (self.grb_time + self.grb_duration):
-            return EventPhase.GRB.value
-        elif (self.grb_time + self.grb_duration) <= t < self.afterglow_peak_time:
-            return EventPhase.POST_MERGER.value
         else:
-            return EventPhase.AFTERGLOW.value
+            return EventPhase.RINGDOWN.value
 
     def get_events(self) -> List[MessengerEvent]:
         """Return chronological list of pre-constructed timeline events."""
