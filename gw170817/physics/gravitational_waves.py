@@ -129,7 +129,14 @@ class WaveformBuffer:
         self._total_appended = 0
 
     def append(self, sample: WaveformSample):
-        """Append a WaveformSample into the circular buffer."""
+        """Append a WaveformSample into the circular buffer, skipping exact duplicate samples."""
+        if self._size > 0:
+            last_idx = (self._head - 1) % self.capacity
+            if (abs(self._time[last_idx] - sample.time) < 1e-5 and
+                abs(self._h_plus[last_idx] - sample.h_plus) < 1e-18 and
+                abs(self._h_cross[last_idx] - sample.h_cross) < 1e-18):
+                return
+
         idx = self._head
         self._time[idx] = sample.time
         self._h_plus[idx] = sample.h_plus

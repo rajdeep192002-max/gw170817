@@ -3,23 +3,23 @@
 ## System Environment
 - **Taichi Version**: `(1, 7, 4)`
 - **GPU Backend**: `VULKAN` (Vulkan Hardware Acceleration Active)
-- **Timestamp**: `2026-09-09 21:57:13`
+- **Timestamp**: `2026-09-12 22:45:09`
 
 ## Performance Benchmark Results
 
 | Mode | Particles | Init Time (s) | Avg FPS | Min FPS | Avg ms | p50 ms | p95 ms | p99 ms | Physics ms | Stability |
 |------|-----------|---------------|---------|---------|--------|--------|--------|--------|------------|-----------|
-| **DEV** | 20,000 | 0.375 | **85.1** | 25.9 | 11.75 | 10.48 | 21.14 | 26.96 | 11.75 | **PASS** |
-| **NORMAL** | 75,000 | 0.404 | **60.0** | 27.5 | 16.68 | 14.64 | 34.26 | 35.93 | 16.68 | **PASS** |
-| **HIGH** | 150,000 | 0.512 | **48.7** | 9.6 | 20.55 | 16.55 | 50.57 | 53.58 | 20.55 | **PASS** |
+| **DEV** | 20,000 | 2.205 | **112.8** | 18.2 | 8.87 | 4.53 | 45.69 | 51.25 | 8.87 | **PASS** |
+| **NORMAL** | 75,000 | 2.261 | **79.6** | 9.2 | 12.57 | 5.26 | 72.97 | 88.48 | 12.56 | **PASS** |
+| **HIGH** | 100,000 | 2.252 | **84.9** | 9.4 | 11.78 | 4.55 | 74.27 | 84.77 | 11.78 | **PASS** |
 
 ## Longer-Term Stability Check (1,000 Steps)
 
 | Mode | Early Avg ms (Step 1-50) | Late Avg ms (Step 950-1000) | Frame Time Degradation | Result |
 |------|--------------------------|-----------------------------|-----------------------|--------|
-| **DEV** | 11.96 ms | 11.87 ms | -0.8% | STABLE (PASS) |
-| **NORMAL** | 16.52 ms | 19.42 ms | +17.5% | STABLE (PASS) |
-| **HIGH** | 19.81 ms | 19.09 ms | -3.6% | STABLE (PASS) |
+| **DEV** | 6.06 ms | 5.82 ms | -3.9% | STABLE (PASS) |
+| **NORMAL** | 8.87 ms | 8.15 ms | -8.1% | STABLE (PASS) |
+| **HIGH** | 8.89 ms | 9.30 ms | +4.5% | STABLE (PASS) |
 
 ## Memory & Allocation Audit Findings
 
@@ -32,7 +32,7 @@
 
 **Recommended Hackathon Default**: `NORMAL` (75,000 particles)
 
-**Justification**: NORMAL mode (75,000 particles) achieves excellent performance (60.0 FPS, 34.3 ms p95) while providing 3.75x higher particle resolution than DEV mode with 100% numerical stability.
+**Justification**: NORMAL mode (75,000 particles) achieves excellent performance (79.6 FPS, 73.0 ms p95) while providing 3.75x higher particle resolution than DEV mode with 100% numerical stability.
 
 ---
 *Report generated automatically by GW170817 simulation performance benchmark suite.*

@@ -113,7 +113,7 @@ def test_demo_director():
     for _ in range(len(expected_stages)):
         director.next_stage()
     assert director.is_complete
-    assert director.current_stage == "COMPLETE"
+    assert director.current_stage in ("COMPLETE", "CONTINUOUS_POST_MERGER")
     assert director.progress == 1.0
     print("10. complete state is deterministic: PASS")
 
@@ -154,9 +154,12 @@ def test_demo_director():
 
     director.jump_to_stage_index(2)  # MERGER (t_pres = 6.0)
     assert director.disk_progress == 0.0
+    assert director.coordinator.current_state.event_time == 0.0
+    assert director.coordinator.engine.current_state.event_time == 0.0
+    assert director.coordinator.engine.current_state.merger_contact_fraction == 0.0
 
     director.jump_to_stage_index(3)  # RINGDOWN (t_pres = 9.0)
-    assert 0.7 <= director.disk_progress <= 0.95, f"Expected disk_progress ~ 0.84 at RINGDOWN stage, got {director.disk_progress}"
+    assert director.disk_progress == 1.0
     print("13. disk_progress property evolution across checkpoints: PASS")
 
     print("\nALL TASK 017, 021 & 022 DEMO DIRECTOR CHECKS PASSED SUCCESSFULLY!")

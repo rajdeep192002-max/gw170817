@@ -20,6 +20,7 @@ if PROJECT_ROOT not in sys.path:
 from gw170817.constants import M_sun, Mpc
 from gw170817.config import SimConfig
 from gw170817.simulation.engine import GW170817Simulation
+from gw170817.visualization.renderer import ParticleRenderer
 
 
 def get_backend_name(arch) -> str:
@@ -46,6 +47,7 @@ def run_benchmark_for_config(mode: str, warmup_frames: int = 60, measurement_fra
     # 1. Initialization Timing
     t0_init = time.perf_counter()
     engine = GW170817Simulation(config=config)
+    renderer = ParticleRenderer(engine.psys)
     init_time_sec = time.perf_counter() - t0_init
     p_print(f"[{mode}] Initialization Time: {init_time_sec:.3f} s ({n_particles:,} particles)")
 
@@ -55,6 +57,17 @@ def run_benchmark_for_config(mode: str, warmup_frames: int = 60, measurement_fra
     p_print(f"[{mode}] Running {warmup_frames} warmup frames...")
     for _ in range(warmup_frames):
         engine.step()
+        renderer.update_ejecta_fluid(
+            event_time=0.04,
+            ejecta_progress=0.5,
+            is_active=True,
+            ejecta_mass_fraction=max(engine.current_state.ejecta_fraction, 0.02),
+        )
+        renderer.update_ejecta_thermal_emission(
+            event_time=0.04, ejecta_progress=0.5, radioactive_heating_rate=2.0e10,
+            opacity_mean=0.7, mean_ye=0.25, kilonova_luminosity=1.0e34, is_active=True,
+        )
+        renderer.update_combined_post_merger()
 
     # 3. Measurement Phase (300 frames)
     p_print(f"[{mode}] Measuring {measurement_frames} steady-state frames...")
@@ -67,6 +80,17 @@ def run_benchmark_for_config(mode: str, warmup_frames: int = 60, measurement_fra
 
         # Step physics engine (substeps loop)
         engine.step()
+        renderer.update_ejecta_fluid(
+            event_time=0.04,
+            ejecta_progress=0.5,
+            is_active=True,
+            ejecta_mass_fraction=max(engine.current_state.ejecta_fraction, 0.02),
+        )
+        renderer.update_ejecta_thermal_emission(
+            event_time=0.04, ejecta_progress=0.5, radioactive_heating_rate=2.0e10,
+            opacity_mean=0.7, mean_ye=0.25, kilonova_luminosity=1.0e34, is_active=True,
+        )
+        renderer.update_combined_post_merger()
 
         t_phys = time.perf_counter() - t0_phys
         t_frame = time.perf_counter() - t0_frame
@@ -136,6 +160,10 @@ def run_benchmark_for_config(mode: str, warmup_frames: int = 60, measurement_fra
     result = {
         "mode": mode,
         "n_particles": n_particles,
+        "visual_ejecta_samples": renderer.n_ejecta_fluid_particles,
+        "visual_ejecta_update_included": True,
+        "thermal_ejecta_samples": renderer.n_ejecta_thermal_particles,
+        "thermal_emission_update_included": True,
         "backend": arch_used,
         "init_time_sec": round(init_time_sec, 4),
         "warmup_frames": warmup_frames,

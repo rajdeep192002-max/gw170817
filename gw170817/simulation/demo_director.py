@@ -21,6 +21,7 @@ class DemoStage(Enum):
     LATE_INSPIRAL = "LATE_INSPIRAL"
     MERGER = "MERGER"
     RINGDOWN = "RINGDOWN"
+    CONTINUOUS_POST_MERGER = "CONTINUOUS_POST_MERGER"
     COMPLETE = "COMPLETE"
 
 
@@ -41,6 +42,8 @@ class DemoDirector:
     Deterministic Playback Controller for GW170817 Multi-Messenger Demonstration.
     Orchestrates continuous presentation progress t_pres in [0.0, 15.0] seconds across all phase channels.
     """
+
+    MERGER_PRESENTATION_TIME: float = 6.0
 
     STAGE_SEQUENCE: List[DemoStage] = [
         DemoStage.INSPIRAL,
@@ -138,7 +141,7 @@ class DemoDirector:
           MERGER         6–9 s pres  →  event_time  0   → 1.74 s (merger, remnant, ejecta, disk, jet launch)
           RINGDOWN       9–15 s pres →  event_time  1.74 s → 200 days (continuous post-merger evolution)
         """
-        self._presentation_time = float(np.clip(t_pres, 0.0, self.total_presentation_duration))
+        self._presentation_time = max(0.0, float(t_pres))
         p_tot = float(np.clip(self._presentation_time / self.total_presentation_duration, 0.0, 1.0))
 
         # Pre-fetch current omega_orb for phase accumulation (used in inspiral bands)
@@ -177,51 +180,88 @@ class DemoDirector:
 
         elif p_tot < p_merger:
             # MERGER (6-9s pres): Slow-motion physical merger evolution (0 ms -> 60 ms -> 1.74 s)
-            # 6.0s pres -> 0.00 ms (0.000 s)
-            # 6.3s pres -> 1.92 ms (~2 ms)
-            # 6.6s pres -> 5.28 ms (~5 ms)
-            # 7.0s pres -> 12.00 ms (~10 ms)
-            # 7.5s pres -> 24.00 ms (~20 ms)
-            # 8.0s pres -> 40.00 ms (~35 ms)
-            # 8.5s pres -> 60.00 ms (~60 ms)
-            # 9.0s pres -> 1.74 s (post-merger ringdown transition)
             frac_merger = (p_tot - p_late) / (p_merger - p_late)
             u = max(0.0, min(1.0, float(frac_merger)))
             if u <= 5.0 / 6.0:
                 x = u / (5.0 / 6.0)
                 t_event_merger = 0.010 * x + 0.050 * (x ** 2)
             else:
-                y = (u - 5.0 / 6.0) / (1.0 / 6.0)
-                t_event_merger = 0.060 + (1.740 - 0.060) * (y ** 2)
+                y = min(1.0, (u - 5.0 / 6.0) / (1.0 / 6.0))
+                t_event_merger = min(1.740, 0.060 + (1.740 - 0.060) * (y ** 2))
 
-            self.coordinator.jump_to_demo_phase(f_gw=1200.0, separation=30.0e3)
             self.coordinator.evaluate_at_event_time(t_event_merger)
 
         else:
-            # RINGDOWN (9-15s pres): event_time 1.74 s → 200 days (continuous post-merger physical system)
-            frac_ringdown = (p_tot - p_merger) / (1.0 - p_merger)
-            t_ag = 1.74 + frac_ringdown * (200.0 * 86400.0 - 1.74)
+            # RINGDOWN / CONTINUOUS_POST_MERGER (>=9s pres): event_time 1.74 s → 200+ days
+            if self._presentation_time > self.total_presentation_duration:
+                self._stage = DemoStage.CONTINUOUS_POST_MERGER
+                dt_ext = self._presentation_time - self.total_presentation_duration
+                t_ag = 200.0 * 86400.0 + dt_ext * 86400.0
+            else:
+                frac_ringdown = (p_tot - p_merger) / (1.0 - p_merger)
+                t_ag = 1.74 + frac_ringdown * (200.0 * 86400.0 - 1.74)
             self.coordinator.evaluate_at_event_time(t_ag)
 
+        # Sample GW model from the exact InspiralState driving the NS positions & event state
+        insp_state = self.coordinator.engine.dynamics.inspiral_state
+        insp_state.time = self.coordinator.current_state.event_time
+        gw_sample = self.coordinator.engine.gw_model.sample(insp_state)
+
+        # Append to WaveformBuffer (WaveformBuffer handles deduplication automatically)
+        buf = self.coordinator.engine.waveform_buffer
+        buf.append(gw_sample)
+
         return self.coordinator.current_state
+
+    def _compute_integrated_phase(self, t_target: float) -> float:
+        """Compute integrated orbital phase over presentation duration [0.0, t_target]."""
+        if t_target <= 0.0:
+            return 0.0
+        n_steps = 100
+        dt = t_target / n_steps
+        phase = 0.0
+        c_coeff = getattr(self.coordinator.engine.inspiral, "_df_coeff", 0.0)
+        f_max = self.coordinator.engine.inspiral.f_max
+        f_start = self.config.f_gw_start
+
+        for i in range(n_steps):
+            t_mid = (i + 0.5) * dt
+            if t_mid < 4.0:
+                tau_rem = 5.0 - t_mid
+            elif t_mid < 6.0:
+                tau_rem = 6.0 - t_mid
+            else:
+                tau_rem = 0.0
+
+            if tau_rem > 0.0 and c_coeff > 0.0:
+                term = (f_max ** (-8.0 / 3.0)) + (8.0 * c_coeff / 3.0) * tau_rem
+                f_gw = min(f_max - 1.0, max(f_start, float(term ** (-3.0 / 8.0))))
+            else:
+                f_gw = f_max
+
+            omega_orb = np.pi * f_gw
+            phase += omega_orb * dt
+
+        return phase
 
     def jump_to_stage_index(self, index: int) -> MultiMessengerEventState:
         """Jump deterministically to a specific stage index in STAGE_SEQUENCE."""
         if index < 0:
             return self.reset()
         elif index >= len(self.STAGE_SEQUENCE):
-            self._stage = DemoStage.COMPLETE
+            self._stage = DemoStage.CONTINUOUS_POST_MERGER
             self._stage_index = len(self.STAGE_SEQUENCE)
-            self._stage_elapsed = 6.0
-            self._presentation_time = self.total_presentation_duration
             self._is_paused = False
-            return self.coordinator.evaluate_at_event_time(200.0 * 86400.0)
+            if self._presentation_time < self.total_presentation_duration:
+                self._presentation_time = self.total_presentation_duration
+            self._accumulated_orbital_phase = self._compute_integrated_phase(self._presentation_time)
+            return self._sync_physics_for_presentation_time(self._presentation_time)
 
         self._stage_index = index
         self._stage = self.STAGE_SEQUENCE[index]
         self._stage_elapsed = 0.0
         self._presentation_time = self.STAGE_START_TIMES[self._stage]
-        self._accumulated_orbital_phase = 0.0
+        self._accumulated_orbital_phase = self._compute_integrated_phase(self._presentation_time)
 
         checkpoint = self.CHECKPOINT_MAP[self._stage]
         self.scenario.jump_to_checkpoint(checkpoint, preserve_waveform=True)
@@ -299,13 +339,17 @@ class DemoDirector:
         dt_pres = dt_val * self._speed_multiplier
 
         self._stage_elapsed += dt_pres
-        self._presentation_time = min(self.total_presentation_duration, self._presentation_time + dt_pres)
+        self._presentation_time += dt_pres
+
+        if self._stage in self.STAGE_SEQUENCE:
+            stage_dur = self.STAGE_DURATIONS.get(self._stage, 1.0)
+            if self._stage_elapsed >= stage_dur:
+                rem = self._stage_elapsed - stage_dur
+                self.next_stage()
+                self._stage_elapsed = rem
+                self._presentation_time = self.STAGE_START_TIMES.get(self._stage, self.total_presentation_duration) + rem
 
         self._sync_physics_for_presentation_time(self._presentation_time, dt_pres=dt_pres)
-
-        stage_dur = self.STAGE_DURATIONS.get(self._stage, 1.0)
-        if self._stage_elapsed >= stage_dur:
-            self.next_stage()
 
         return self.coordinator.current_state
 
@@ -328,25 +372,25 @@ class DemoDirector:
     @property
     def merger_progress(self) -> float:
         """Smooth contact & merger collision progress [0.0, 1.0]."""
-        p = float((self._presentation_time - 4.0) / 5.0)  # 4 to 9s
+        p = float((self._presentation_time - 6.0) / 3.0)  # 6 to 9s
         return smoothstep(0.0, 1.0, p)
 
     @property
     def ejecta_progress(self) -> float:
         """Smooth dynamic ejecta expansion progress [0.0, 1.0]."""
-        p = float((self._presentation_time - 6.0) / 9.0)  # 6 to 15s
+        p = float((self._presentation_time - 6.0) / 3.0)  # 6 to 9s
         return smoothstep(0.0, 1.0, p)
 
     @property
     def disk_progress(self) -> float:
         """Smooth accretion disk torus formation progress [0.0, 1.0]."""
-        p = float((self._presentation_time - 6.0) / 4.0)  # 6 to 10s
+        p = float((self._presentation_time - 6.0) / 3.0)  # 6 to 9s
         return smoothstep(0.0, 1.0, p)
 
     @property
     def b_winding_progress(self) -> float:
         """Smooth magnetic field winding progress [0.0, 1.0]."""
-        p = float((self._presentation_time - 6.0) / 4.0)  # 6 to 10s
+        p = float((self._presentation_time - 6.0) / 3.0)  # 6 to 9s
         return smoothstep(0.0, 1.0, p)
 
     @property
@@ -393,9 +437,14 @@ class DemoDirector:
         return self._speed_multiplier
 
     @property
+    def is_slow_motion(self) -> bool:
+        """True if playback mode is SLOW MOTION (speed multiplier < 1.0)."""
+        return self._playback_mode == PlaybackMode.SLOW_MOTION or self._speed_multiplier < 0.99
+
+    @property
     def is_running(self) -> bool:
         """True if presentation playback is active in a valid stage."""
-        return self._stage in self.STAGE_SEQUENCE
+        return self._stage in self.STAGE_SEQUENCE or self._stage == DemoStage.CONTINUOUS_POST_MERGER
 
     @property
     def is_paused(self) -> bool:
@@ -404,8 +453,8 @@ class DemoDirector:
 
     @property
     def is_complete(self) -> bool:
-        """True if demo playback sequence has finished."""
-        return self._stage == DemoStage.COMPLETE
+        """True if demo presentation sequence has completed (transitioned into continuous post-merger)."""
+        return self._stage in (DemoStage.COMPLETE, DemoStage.CONTINUOUS_POST_MERGER)
 
     @property
     def stage_progress(self) -> float:
@@ -434,6 +483,7 @@ class DemoDirector:
             "total_stages": len(self.STAGE_SEQUENCE),
             "playback_mode": self.playback_mode_str,
             "speed_multiplier": self._speed_multiplier,
+            "is_slow_motion": self.is_slow_motion,
             "presentation_time": self._presentation_time,
             "total_presentation_duration": self.total_presentation_duration,
             "stage_progress": self.stage_progress,

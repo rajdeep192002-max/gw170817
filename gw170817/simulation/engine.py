@@ -179,6 +179,7 @@ class GW170817Simulation:
         self.dynamics.inspiral_state.omega_orb = np.pi * f_clamped
         self.dynamics.inspiral_state.separation = a_target
         self.dynamics.inspiral_state.df_dt = self.inspiral._compute_df_dt(f_clamped)
+        self.dynamics.inspiral_state.time = -tau_target
 
         self.dynamics.merger_state.merger_started = False
         self.dynamics.merger_state.merger_complete = False
@@ -222,6 +223,40 @@ class GW170817Simulation:
         self.dynamics.inspiral_state.orbital_frequency = f_max / 2.0
         self.dynamics.inspiral_state.omega_orb = np.pi * f_max
         self.dynamics.inspiral_state.separation = 20.0e3
+
+        self.dynamics.update_particles()
+        return self._update_cached_state()
+
+    def set_demo_event_time(self, t_seconds: float):
+        """Synchronize the non-stepping presentation state to one event timestamp.
+
+        The presentation director uses this path while replaying its compressed
+        timeline.  It deliberately preserves the reduced-order physics models,
+        but ramps contact over the existing 60 ms dynamical-merger interval
+        instead of forcing the visual state to fully merged at event time zero.
+        """
+        t_val = float(t_seconds)
+        if t_val < 0.0:
+            raise ValueError("Demo event time must be non-negative")
+
+        if not self.is_demo_phase:
+            self.dynamics.inspiral_state.f_gw = 1200.0
+            self.dynamics.inspiral_state.orbital_frequency = 600.0
+            self.dynamics.inspiral_state.omega_orb = np.pi * 1200.0
+            self.dynamics.inspiral_state.separation = 30.0e3
+
+        self.is_demo_phase = True
+        self._post_merger_event_time = t_val
+
+        contact_fraction = float(np.clip(t_val / 0.060, 0.0, 1.0))
+        merger_state = self.dynamics.merger_state
+        merger_state.contact_fraction = contact_fraction
+        merger_state.in_contact = bool(contact_fraction >= 0.5)
+        merger_state.merger_started = True
+        merger_state.merger_complete = bool(contact_fraction >= 1.0)
+        self.dynamics.v_clamp = min(
+            0.40, 0.05 + 0.35 * (1.0 - np.exp(-t_val / 0.1))
+        )
 
         self.dynamics.update_particles()
         return self._update_cached_state()

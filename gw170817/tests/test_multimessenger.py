@@ -71,6 +71,9 @@ def test_multimessenger():
     assert st_kn.kilonova_luminosity > 0.0
     assert st_kn.kilonova_t_blue > 0.0
     assert st_kn.kilonova_t_red > 0.0
+    assert np.isfinite(st_kn.ejecta_mean_ye)
+    assert st_kn.ejecta_radioactive_heating_rate > 0.0
+    assert st_kn.ejecta_opacity_mean >= 0.0
     print("8. Post-merger kilonova evaluation: PASS")
 
     # 9. Afterglow State Available at Late Time

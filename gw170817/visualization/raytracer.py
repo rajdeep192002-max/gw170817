@@ -41,26 +41,36 @@ class SchwarzschildRaytracer:
         enhanced_scale: ti.f32
     ):
         """
-        Taichi GPU parallel RK4 null geodesic integration kernel.
-        For each pixel (i, j), shoots camera ray and integrates geodesic acceleration around (ns1, ns2).
+        Taichi GPU parallel weak-field gravitational lensing raytracer kernel.
+        Computes screen-space deflection vector alpha ~ 4GM / (c^2 b) relative to compact object centers.
+
+        REDUCED-ORDER VISUALIZATION MODEL:
+        - Deflection magnitude scales as 4GM / (c^2 b) with an explicit display amplification factor.
+        - Pre-merger: dual compact-object deflection around orbiting binary NS positions.
+        - Post-merger / Adopted BH collapse: single compact-object deflection around remnant origin [0, 0, 0].
         """
         c2 = 8.98755e16
         G_val = 6.6743e-11
-        rs1 = (2.0 * G_val * m1_kg) / c2  # Schwarzschild radius NS1 [m]
-        rs2 = (2.0 * G_val * m2_kg) / c2  # Schwarzschild radius NS2 [m]
 
-        pos1 = ti.Vector([ns1_x, ns1_y, ns1_z])
-        pos2 = ti.Vector([ns2_x, ns2_y, ns2_z])
+        # Schwarzschild radii r_s = 2 G M / c^2 [m]
+        rs1 = (2.0 * G_val * m1_kg) / c2
+        rs2 = (2.0 * G_val * m2_kg) / c2
 
-        scale_view = 500.0e3  # Screen viewport half-width [m]
+        scale_view = 500.0e3  # Half-width viewport scale [m]
+
+        # Named display amplification factor for camera distance ~280 km
+        visual_amplification = 4.5 * enhanced_scale
+
+        # Screen-projected 2D impact centers for lens 1 and lens 2
+        u1 = ns1_x / scale_view
+        v1 = ns1_y / scale_view
+
+        u2 = ns2_x / scale_view
+        v2 = ns2_y / scale_view
 
         for i, j in ti.ndrange(self.h, self.w):
             u = (float(j) / float(self.w) - 0.5) * 2.0
             v = (float(i) / float(self.h) - 0.5) * 2.0
-
-            # Ray initial position and direction vector (camera pointing toward origin)
-            ray_pos = ti.Vector([u * scale_view, v * scale_view, 1.0e6])
-            ray_dir = ti.Vector([0.0, 0.0, -1.0])
 
             if lensing_active == 0:
                 # Straight rays (LENSING OFF)
@@ -70,28 +80,30 @@ class SchwarzschildRaytracer:
                 src_i = int(v_sky * float(self.bg.h - 1))
                 self.output_img[i, j] = self.bg.sky_texture[src_i, src_j]
             else:
-                # Physically curved null geodesics (RK4 integration)
-                # Compute 2D/3D impact vectors and Schwarzschild acceleration
-                d1 = ray_pos - pos1
-                d2 = ray_pos - pos2
+                # Screen-space weak-field deflection alpha = 4GM / (c^2 b)
+                # Lens 1 deflection vector
+                du1 = u - u1
+                dv1 = v - v1
+                b1_sq = du1 * du1 + dv1 * dv1
+                b1 = ti.sqrt(ti.max(1.0e-4, b1_sq))
 
-                d1_sq = d1[0]*d1[0] + d1[1]*d1[1] + d1[2]*d1[2]
-                d2_sq = d2[0]*d2[0] + d2[1]*d2[1] + d2[2]*d2[2]
+                rs1_norm = rs1 / scale_view
+                deflect1_mag = (visual_amplification * rs1_norm) / (b1 * (1.0 + 3.0 * b1))
+                deflect1 = ti.Vector([du1 * deflect1_mag, dv1 * deflect1_mag]) if m1_kg > 0.0 else ti.Vector([0.0, 0.0])
 
-                r1_sq = ti.max(225.0e6, d1_sq)
-                r2_sq = ti.max(225.0e6, d2_sq)
+                # Lens 2 deflection vector
+                du2 = u - u2
+                dv2 = v - v2
+                b2_sq = du2 * du2 + dv2 * dv2
+                b2 = ti.sqrt(ti.max(1.0e-4, b2_sq))
 
-                # Weak-field Schwarzschild acceleration a_lens = - 1.5 rs * d / r^4
-                c1_factor = 1.5 * rs1 * 1.0e10 * enhanced_scale / (r1_sq * r1_sq)
-                c2_factor = 1.5 * rs2 * 1.0e10 * enhanced_scale / (r2_sq * r2_sq)
+                rs2_norm = rs2 / scale_view
+                deflect2_mag = (visual_amplification * rs2_norm) / (b2 * (1.0 + 3.0 * b2))
+                deflect2 = ti.Vector([du2 * deflect2_mag, dv2 * deflect2_mag]) if m2_kg > 0.0 else ti.Vector([0.0, 0.0])
 
-                acc1 = - c1_factor * d1
-                acc2 = - c2_factor * d2
-
-                total_deflect = (acc1 + acc2) * 0.005
-
-                u_deflect = u + total_deflect[0]
-                v_deflect = v + total_deflect[1]
+                # Combined screen-space star displacement vector
+                u_deflect = u + (deflect1[0] + deflect2[0])
+                v_deflect = v + (deflect1[1] + deflect2[1])
 
                 u_sky = ti.max(0.0, ti.min(1.0, 0.5 + 0.5 * u_deflect))
                 v_sky = ti.max(0.0, ti.min(1.0, 0.5 + 0.5 * v_deflect))
@@ -99,16 +111,14 @@ class SchwarzschildRaytracer:
                 src_j = int(u_sky * float(self.bg.w - 1))
                 src_i = int(v_sky * float(self.bg.h - 1))
 
-                # Add Einstein-ring circular distortion glow near compact object positions
-                glow = 0.0
-                if r1_sq < 900.0e6:
-                    g1 = 1.0 - (ti.sqrt(r1_sq) / 30.0e3)
-                    glow += g1 * g1 * 0.5
-                if r2_sq < 900.0e6:
-                    g2 = 1.0 - (ti.sqrt(r2_sq) / 30.0e3)
-                    glow += g2 * g2 * 0.5
+                # Subtle Einstein-ring arcing highlights near compact object boundaries
+                arc_glow = 0.0
+                if m1_kg > 0.0 and b1 < 0.08:
+                    arc_glow += (1.0 - b1 / 0.08) ** 2 * 0.35
+                if m2_kg > 0.0 and b2 < 0.08:
+                    arc_glow += (1.0 - b2 / 0.08) ** 2 * 0.35
 
-                col = self.bg.sky_texture[src_i, src_j] + ti.Vector([0.3 * glow, 0.6 * glow, 1.0 * glow])
+                col = self.bg.sky_texture[src_i, src_j] + ti.Vector([0.15 * arc_glow, 0.45 * arc_glow, 0.90 * arc_glow])
                 self.output_img[i, j] = col
 
     def render(

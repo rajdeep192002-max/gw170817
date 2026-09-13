@@ -215,6 +215,9 @@ def test_checkpoint_navigation_n_b():
     assert t3 > t2
     assert t3 == 6.0
     assert stage3 == "MERGER"
+    assert abs(evt3) < 1.0e-9
+    assert abs(dashboard.engine.current_state.event_time - evt3) < 1.0e-9
+    assert dashboard.engine.current_state.merger_contact_fraction == 0.0
 
     # 5. Press N: Jump to Stage 3 (RINGDOWN, 9.0s)
     st4 = dashboard.director.next_stage()
@@ -239,7 +242,70 @@ def test_checkpoint_navigation_n_b():
     print("Checkpoint Navigation (N/B physical state & time jump): PASS")
 
 
+def test_step5b_mode_switching():
+    """Verify Step 5B mode-specific scientific views logic, camera targets, and state preservation."""
+    from gw170817.visualization.dashboard import ScientificDashboard
+
+    config = SimConfig(mode="DEV")
+    engine = GW170817Simulation(config)
+    dashboard = ScientificDashboard(engine=engine, config=config)
+
+    initial_event_time = dashboard.engine.current_state.event_time
+
+    # 1. CORE Mode
+    dashboard.set_view_mode("CORE")
+    assert dashboard.view_mode == "CORE"
+    assert dashboard.target_cam_distance == 280.0e3
+    assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
+
+    # 2. GW Mode
+    dashboard.set_view_mode("GW")
+    assert dashboard.view_mode == "GW"
+    assert dashboard.target_cam_distance == 350.0e3
+    assert dashboard.wave_propagation.active
+    assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
+
+    # 3. MAGNETIC FIELD Mode
+    dashboard.set_view_mode("MAGNETIC FIELD")
+    assert dashboard.view_mode == "MAGNETIC FIELD"
+    assert dashboard.target_cam_distance == 160.0e3
+    assert dashboard.show_magnetic_field
+    assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
+
+    # 4. BH LENS Mode (Pre-merger -> waiting flag set)
+    dashboard.set_view_mode("BH LENS")
+    assert dashboard.view_mode == "BH LENS"
+    assert dashboard.bh_lens_waiting, "Pre-merger BH LENS should set waiting flag"
+    assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
+
+    # 5. BH LENS Mode Post-Merger (BH active)
+    dashboard.director._sync_physics_for_presentation_time(12.0)
+    dashboard.set_view_mode("BH LENS")
+    assert dashboard.view_mode == "BH LENS"
+    assert dashboard.target_cam_distance == 32.0e3
+    assert dashboard.lensing.enabled
+
+    # 6. MULTI Mode
+    dashboard.set_view_mode("MULTI")
+    assert dashboard.view_mode == "MULTI"
+    assert dashboard.target_cam_distance == 280.0e3
+
+    # 7. Smooth camera tracking step
+    dashboard.cam_distance = 100.0e3
+    dashboard.target_cam_distance = 280.0e3
+    dashboard.is_interpolating_cam = True
+    dashboard._update_camera_tracking()
+    assert dashboard.cam_distance > 100.0e3, "Camera distance should smoothly step toward target"
+
+    # 8. Manual camera action cancels interpolation
+    dashboard.camera_orbit_left()
+    assert not dashboard.is_interpolating_cam, "Manual orbit should cancel camera interpolation"
+
+    print("Step 5B Mode Switching & State Preservation: PASS")
+
+
 if __name__ == "__main__":
     test_dashboard_logic()
     test_control_mapping_no_d_trigger()
     test_checkpoint_navigation_n_b()
+    test_step5b_mode_switching()
