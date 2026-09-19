@@ -102,8 +102,9 @@ class MergerDynamics:
         v1, v2 = self.inspiral_model.orbital_velocities(
             self.inspiral_state, self.config.m1, self.config.m2
         )
-        eps1 = min(0.5 * self.tidal_state.tidal_distortion_1, 0.4)
-        eps2 = min(0.5 * self.tidal_state.tidal_distortion_2, 0.4)
+        self.tidal_state = self.tidal_model.evaluate(self.inspiral_state)
+        eps1 = float(self.tidal_state.tidal_elongation_1)
+        eps2 = float(self.tidal_state.tidal_elongation_2)
         self._update_particles_kernel(
             self.psys.n_particles_1,
             self.psys.max_particles,

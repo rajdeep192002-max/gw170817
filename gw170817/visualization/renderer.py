@@ -707,7 +707,8 @@ class ParticleRenderer:
         cam_y: ti.f32,
         cam_z: ti.f32,
         lens_active: ti.i32,
-        intensity_scale: ti.f32
+        intensity_scale: ti.f32,
+        remnant_mass_kg: ti.f32
     ):
         """
         Animate thin rotating accretion disk with post-ringdown BH accretion drift, horizon capture recycling,
@@ -716,7 +717,7 @@ class ParticleRenderer:
         two_pi = 6.283185307179586
         c_light = 2.99792458e8
         G_val = 6.6743e-11
-        M_rem = 2.7 * 1.989e30
+        M_rem = remnant_mass_kg
 
         R_capture = 14.5e3   # Safety capture radius outside 14.0 km BH horizon [m]
         R_in_base = 18.0e3   # Baseline inner disk radius [m]
@@ -770,26 +771,37 @@ class ParticleRenderer:
                 z = z0
                 orig_pos = ti.Vector([x, y, z])
 
-                # Relativistic Doppler factor from orbital velocity
-                v_orb_mag = r * om
-                beta_orb = ti.min(0.40, v_orb_mag / c_light)
+                # Relativistic Keplerian velocity v_orb = sqrt(G M / r)
+                v_orb_mag = ti.sqrt(G_val * M_rem / ti.max(1.0e3, r))
+                beta_orb = ti.min(0.42, v_orb_mag / c_light)
 
-                v_dir = ti.Vector([-r * om * ti.sin(phi), r * om * ti.cos(phi), 0.0])
+                v_dir = ti.Vector([-ti.sin(phi), ti.cos(phi), 0.0])
                 cam_ray_dir = cam_pos - orig_pos
                 ray_len = ti.max(1.0, cam_ray_dir.norm())
                 n_cam_ray = cam_ray_dir / ray_len
 
-                beta_los = ti.max(-0.35, ti.min(0.35, (v_dir.dot(n_cam_ray)) / c_light))
-                doppler_boost = ti.max(0.65, ti.min(1.40, 1.0 + 0.40 * beta_los))
+                # Line-of-sight velocity fraction beta_los = (v_dir . n_cam_ray) * beta_orb
+                beta_los = ti.max(-0.35, ti.min(0.35, beta_orb * (v_dir.dot(n_cam_ray))))
 
-                # S-curve radius-dependent thermal color ramp with visual scale floor & intensity scale
-                r_rel = ti.max(0.0, ti.min(1.0, (r - R_in_base) / (R_out - R_in_base)))
-                heat_factor = ti.pow(1.0 - r_rel, 1.4)
-                vis_scale = ti.max(0.50, disk_mass_frac) * intensity_scale
+                # Relativistic Doppler beaming factor: D = 1 / (gamma * (1 - beta_los))
+                gamma_inv = ti.sqrt(ti.max(0.01, 1.0 - beta_orb * beta_orb))
+                doppler_boost = ti.max(0.50, ti.min(2.20, gamma_inv / ti.max(0.1, 1.0 - beta_los)))
 
-                base_r = 0.65 + 0.35 * ti.pow(heat_factor, 0.5)
-                base_g = 0.12 + 0.78 * ti.pow(heat_factor, 1.2)
-                base_b = 0.03 + 0.67 * ti.pow(heat_factor, 2.5)
+                # Gravitational redshift factor: g_grav = sqrt(1 - 2M/r) = sqrt(1 - r_s / r)
+                g_grav = ti.sqrt(ti.max(1.0e-4, 1.0 - rs_bh / ti.max(rs_bh, r)))
+
+                # Physically-motivated disk temperature scaling: T(r) ~ (r / R_ISCO)^(-3/4)
+                r_isco = 3.0 * rs_bh  # ISCO at r = 6M = 3 r_s
+                t_ratio = ti.max(1.0, r / r_isco)
+                t_temp = ti.pow(t_ratio, -0.75)  # T ~ r^-3/4
+
+                # Controlled visual emission multiplier for accretion disk readability (visualization only)
+                vis_scale = ti.max(0.95, intensity_scale) * (0.60 + 0.40 * g_grav)
+
+                # Base temperature color: inner hot (brilliant cyan/white-gold), outer warm amber-gold
+                base_r = ti.min(1.0, 0.88 + 0.35 * t_temp)
+                base_g = ti.min(1.0, 0.38 + 0.62 * ti.pow(t_temp, 1.2))
+                base_b = ti.min(1.0, 0.08 + 0.92 * ti.pow(t_temp, 2.0))
 
                 r_c = ti.min(1.0, base_r * doppler_boost * vis_scale)
                 g_c = ti.min(1.0, base_g * doppler_boost * vis_scale)
@@ -797,32 +809,8 @@ class ParticleRenderer:
 
                 self.disk_colors[i] = ti.Vector([r_c, g_c, b_c])
 
-                # Schwarzschild Gravitational Deflection of Disk Rays into Interstellar Lensing Arcs
-                if is_bh_accretion == 1 and lens_active == 1:
-                    ray_dir = orig_pos - cam_pos
-                    ray_dist = ti.max(1.0, ray_dir.norm())
-                    ray_hat = ray_dir / ray_dist
-
-                    t_proj = -cam_pos.dot(ray_hat)
-                    if t_proj > 0.0:
-                        perp_vec = cam_pos + t_proj * ray_hat
-                        b_imp = ti.max(1.0, perp_vec.norm())
-
-                        # Particle passing behind BH shadow
-                        if b_imp <= bcrit_bh and orig_pos.dot(cam_pos) < 0.0:
-                            # Captured in BH shadow: place offscreen
-                            self.disk_pos[i] = ti.Vector([0.0, 0.0, -1.0e9])
-                        elif b_imp < 110.0e3:
-                            deflect_angle = (4.0 * G_val * M_rem / (c_light * c_light * b_imp)) * 1.8e5
-                            n_to_bh = ti.math.normalize(-perp_vec) if b_imp > 1.0 else ti.Vector([0.0, 0.0, 0.0])
-                            deflected_ray_hat = ti.math.normalize(ray_hat + deflect_angle * n_to_bh)
-                            self.disk_pos[i] = cam_pos + ray_dist * deflected_ray_hat
-                        else:
-                            self.disk_pos[i] = orig_pos
-                    else:
-                        self.disk_pos[i] = orig_pos
-                else:
-                    self.disk_pos[i] = orig_pos
+                # Disk particle physical 3D position in equatorial plane
+                self.disk_pos[i] = orig_pos
 
     def update_disk_particles(
         self,
@@ -836,7 +824,8 @@ class ParticleRenderer:
         cam_y: float = -280.0e3,
         cam_z: float = 180.0e3,
         lensing_enabled: bool = True,
-        intensity_scale: float = 1.0
+        intensity_scale: float = 1.0,
+        remnant_mass_kg: float = 2.7 * 1.989e30
     ):
         """Update 3D thin accretion disk particles on GPU with post-ringdown accretion drift, Doppler beaming, and Schwarzschild lensing arcs."""
         flag = 1 if is_active else 0
@@ -851,7 +840,7 @@ class ParticleRenderer:
         self.update_disk_particles_kernel(
             phase_wrapped, dt_v, flag, is_bh_flag, float(frac),
             float(cam_x), float(cam_y), float(cam_z), lens_flag,
-            float(intensity_scale)
+            float(intensity_scale), float(remnant_mass_kg)
         )
 
     @ti.kernel

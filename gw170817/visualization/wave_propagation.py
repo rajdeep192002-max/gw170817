@@ -16,30 +16,69 @@ class WavefrontState:
     n_vertices: int          # Total number of 3D line vertices generated
 
 
+@ti.func
+def _calc_shell_point(
+    r_shell: ti.f32,
+    theta: ti.f32,
+    phi: ti.f32,
+    phase_shell: ti.f32,
+    deflect_scale: ti.f32
+) -> ti.types.vector(4, ti.f32):
+    """Calculate 3D position [x, y, z] and local quadrupolar strain q for a point on a 3D wave shell."""
+    cos_theta = ti.cos(theta)
+    sin_theta = ti.sin(theta)
+
+    # 3D Quadrupolar m=2 strain pattern: Q(theta, phi) = 0.5 * (1 + cos^2 theta) * cos(2*phi - phase)
+    q = 0.5 * (1.0 + cos_theta * cos_theta) * ti.cos(2.0 * phi - phase_shell)
+    r = r_shell * (1.0 + deflect_scale * q)
+
+    x = r * cos_theta * ti.cos(phi)
+    y = r * cos_theta * ti.sin(phi)
+    z = r * sin_theta
+    return ti.Vector([x, y, z, q])
+
+
+@ti.func
+def _calc_vertex_color(q: ti.f32, col_intensity: ti.f32) -> ti.types.vector(3, ti.f32):
+    """Calculate radiant electric blue/cyan RGB color for 3D GW wave shell vertices."""
+    crest_pos = ti.max(0.0, q)
+    # Radiant electric cyan base [0.20, 0.70, 0.95] with brilliant white-cyan peaks [0.95, 1.00, 1.00]
+    c_r = (0.20 + 0.75 * crest_pos) * col_intensity
+    c_g = (0.70 + 0.30 * crest_pos) * col_intensity
+    c_b = (0.95 + 0.05 * crest_pos) * col_intensity
+    return ti.Vector([c_r, c_g, c_b])
+
+
 @ti.data_oriented
 class GWWavefrontPropagation:
     """
     3D Quadrupolar Gravitational Wavefront Generator.
-    Produces 3D world-space polyline vertices for rendering expanding GW strain wavefronts on GPU.
+    Produces 3D world-space closed quasi-spherical wave shell polyline vertices for rendering expanding GW strain wavefronts on GPU.
+    Implements finite wavefront lifetime (fronts expand at constant c_vis, fade out, and exit scene), inspiral chirp acceleration, 8-shell merger burst, and post-merger emission collapse.
     """
 
-    def __init__(self, c_vis: float = 80.0e3, n_rings: int = 12, pts_per_ring: int = 48):
-        self.c_vis = c_vis            # Visual expansion speed [m/s]
-        self.n_rings = n_rings        # Number of radial wavefront shells
-        self.pts_per_ring = pts_per_ring # Angular resolution per ring
+    def __init__(self, c_vis: float = 110.0e3, n_rings: int = 8, pts_per_ring: int = 48):
+        self.c_vis = c_vis            # Visual expansion speed [m/s] (constant 110 km/s)
+        self.n_rings = n_rings        # Fixed pool of 8 radial 3D wavefront shells
+        self.pts_per_ring = pts_per_ring # Angular resolution per latitude ring
 
         self.active = False
         self.manual_trigger = False
         self.launch_event_time = 0.0
 
         # Preallocated line vertices (2 vertices per line segment)
-        # For each ring: n_lat (6) * pts_per_ring (48) segments = 288 lines = 576 vertices
-        self.n_lat_rings = 6
-        self.lines_per_shell = self.n_lat_rings * pts_per_ring
+        # 3D shell structure per shell:
+        # 3 latitude rings (upper +40 deg, equator 0 deg, lower -40 deg) of pts_per_ring (48) segments
+        # Total per shell = 3 * 48 = 144 line segments = 288 line vertices
+        self.n_lat_rings = 3
+        self.lines_per_shell = self.n_lat_rings * self.pts_per_ring
         self.total_vertices = self.n_rings * self.lines_per_shell * 2
 
         self.gpu_line_vertices = ti.Vector.field(3, dtype=ti.f32, shape=self.total_vertices)
         self.gpu_line_colors = ti.Vector.field(3, dtype=ti.f32, shape=self.total_vertices)
+        self.gpu_shell_radii = ti.field(dtype=ti.f32, shape=self.n_rings)
+        self.gpu_shell_active = ti.field(dtype=ti.i32, shape=self.n_rings)
+        self.gpu_shell_amplitudes = ti.field(dtype=ti.f32, shape=self.n_rings)
 
     @property
     def line_vertices(self) -> np.ndarray:
@@ -69,68 +108,79 @@ class GWWavefrontPropagation:
         for i in range(self.total_vertices):
             self.gpu_line_vertices[i] = ti.Vector([0.0, 0.0, 0.0])
             self.gpu_line_colors[i] = ti.Vector([0.0, 0.0, 0.0])
+        for k in range(self.n_rings):
+            self.gpu_shell_radii[k] = 0.0
+            self.gpu_shell_active[k] = 0
+            self.gpu_shell_amplitudes[k] = 0.0
 
     @ti.kernel
     def _update_wavefront_gpu_kernel(
         self,
         active_flag: ti.i32,
-        base_r: ti.f32,
-        wavelength: ti.f32,
         h_strain_norm: ti.f32,
+        intensity_scale: ti.f32,
     ):
-        pi = 3.141592653589793
         two_pi = 6.283185307179586
+        pi = 3.141592653589793
 
-        for shell_i, lat_i, p_i in ti.ndrange(self.n_rings, self.n_lat_rings, self.pts_per_ring):
-            segment_idx = shell_i * (self.n_lat_rings * self.pts_per_ring) + lat_i * self.pts_per_ring + p_i
-            idx = 2 * segment_idx
+        r_min = 32.0e3
+        r_max = 300.0e3
+        spacing = 55.0e3
 
-            r_shell = base_r - float(shell_i) * wavelength * 2.2
+        lines_in_shell = self.n_lat_rings * self.pts_per_ring
 
-            if active_flag == 0 or r_shell < 5.0e3:
-                self.gpu_line_vertices[idx] = ti.Vector([0.0, 0.0, 0.0])
-                self.gpu_line_vertices[idx + 1] = ti.Vector([0.0, 0.0, 0.0])
-                self.gpu_line_colors[idx] = ti.Vector([0.0, 0.0, 0.0])
-                self.gpu_line_colors[idx + 1] = ti.Vector([0.0, 0.0, 0.0])
+        for shell_i in range(self.n_rings):
+            shell_base_seg = shell_i * lines_in_shell
+
+            is_active = self.gpu_shell_active[shell_i]
+            r_shell = self.gpu_shell_radii[shell_i]
+            shell_amp = self.gpu_shell_amplitudes[shell_i]
+
+            if active_flag == 0 or is_active == 0 or r_shell < r_min or r_shell > r_max:
+                for seg in range(lines_in_shell):
+                    idx = 2 * (shell_base_seg + seg)
+                    self.gpu_line_vertices[idx] = ti.Vector([0.0, 0.0, 0.0])
+                    self.gpu_line_vertices[idx + 1] = ti.Vector([0.0, 0.0, 0.0])
+                    self.gpu_line_colors[idx] = ti.Vector([0.0, 0.0, 0.0])
+                    self.gpu_line_colors[idx + 1] = ti.Vector([0.0, 0.0, 0.0])
             else:
+                # Physical 1/r amplitude attenuation + smooth boundary fade
                 amp_att = 1.0 / (1.0 + r_shell / 80.0e3)
-                col_intensity = ti.max(0.05, ti.min(1.0, amp_att * 1.5 * h_strain_norm))
-                phase_shell = (r_shell / wavelength) * two_pi
+                fade_inner = ti.min(1.0, (r_shell - r_min) / 8.0e3)
+                fade_outer = ti.min(1.0, (r_max - r_shell) / 30.0e3)
+                shell_fade = ti.max(0.0, fade_inner * fade_outer)
 
-                lat = -pi * 0.4 + float(lat_i) * (pi * 0.8 / float(self.n_lat_rings - 1)) if self.n_lat_rings > 1 else 0.0
-                cos_lat = ti.cos(lat)
-                sin_lat = ti.sin(lat)
-                plus_fac = 0.5 * (1.0 + sin_lat * sin_lat)
-                cross_fac = sin_lat
+                # Brightness hierarchy: merger burst strongest (0.95-1.0), late inspiral moderate (0.6-0.75), early subtle (0.35)
+                col_intensity = ti.max(0.05, ti.min(1.0, shell_amp * amp_att * 2.2 * h_strain_norm * shell_fade * intensity_scale))
 
-                phi1 = (float(p_i) / float(self.pts_per_ring)) * two_pi
-                p_next = (p_i + 1) % self.pts_per_ring
-                phi2 = (float(p_next) / float(self.pts_per_ring)) * two_pi
+                # Dynamic quadrupolar phase advances outward with radius
+                phase_shell = (r_shell / spacing) * two_pi
+                # Prominent 28% quadrupolar m=2 distortion for clear tidal lobes
+                deflect_scale = 0.28 * shell_amp * ti.min(1.5, h_strain_norm)
 
-                quad1 = plus_fac * ti.cos(2.0 * phi1 - phase_shell) + cross_fac * ti.sin(2.0 * phi1 - phase_shell)
-                quad2 = plus_fac * ti.cos(2.0 * phi2 - phase_shell) + cross_fac * ti.sin(2.0 * phi2 - phase_shell)
+                # Render 3D Latitude Rings: lower (-40 deg), equator (0 deg), upper (+40 deg)
+                for lat_i in range(self.n_lat_rings):
+                    theta = (-pi / 4.5) + float(lat_i) * (pi / 4.5) # -40 deg, 0 deg, +40 deg
+                    for p_i in range(self.pts_per_ring):
+                        seg_idx = shell_base_seg + lat_i * self.pts_per_ring + p_i
+                        idx = 2 * seg_idx
 
-                deflect_scale = 0.12 * h_strain_norm
-                r1 = r_shell * (1.0 + deflect_scale * quad1)
-                r2 = r_shell * (1.0 + deflect_scale * quad2)
+                        phi1 = (float(p_i) / float(self.pts_per_ring)) * two_pi
+                        phi2 = (float((p_i + 1) % self.pts_per_ring) / float(self.pts_per_ring)) * two_pi
 
-                x1 = r1 * cos_lat * ti.cos(phi1)
-                y1 = r1 * cos_lat * ti.sin(phi1)
-                z1 = r1 * sin_lat
+                        pt1 = _calc_shell_point(r_shell, theta, phi1, phase_shell, deflect_scale)
+                        pt2 = _calc_shell_point(r_shell, theta, phi2, phase_shell, deflect_scale)
 
-                x2 = r2 * cos_lat * ti.cos(phi2)
-                y2 = r2 * cos_lat * ti.sin(phi2)
-                z2 = r2 * sin_lat
+                        v1 = ti.Vector([pt1[0], pt1[1], pt1[2]])
+                        v2 = ti.Vector([pt2[0], pt2[1], pt2[2]])
 
-                self.gpu_line_vertices[idx] = ti.Vector([x1, y1, z1])
-                self.gpu_line_vertices[idx + 1] = ti.Vector([x2, y2, z2])
+                        c1 = _calc_vertex_color(pt1[3], col_intensity)
+                        c2 = _calc_vertex_color(pt2[3], col_intensity)
 
-                c_r = 0.2 + 0.8 * float(ti.max(0.0, quad1)) * col_intensity
-                c_g = 0.85 * col_intensity
-                c_b = 1.0 * col_intensity
-
-                self.gpu_line_colors[idx] = ti.Vector([c_r, c_g, c_b])
-                self.gpu_line_colors[idx + 1] = ti.Vector([c_r, c_g, c_b])
+                        self.gpu_line_vertices[idx] = v1
+                        self.gpu_line_vertices[idx + 1] = v2
+                        self.gpu_line_colors[idx] = c1
+                        self.gpu_line_colors[idx + 1] = c2
 
     def update(
         self,
@@ -138,13 +188,14 @@ class GWWavefrontPropagation:
         f_gw: float = 100.0,
         merger_active: bool = False,
         h_plus: float = 1.0e-21,
-        h_cross: float = 0.0
+        h_cross: float = 0.0,
+        intensity_scale: float = 1.0
     ) -> WavefrontState:
         """
-        Update 3D expanding quadrupolar wavefront line geometry on GPU centered at world origin [0,0,0].
+        Update 3D expanding quadrupolar wavefront shell line geometry on GPU centered at world origin [0,0,0].
+        Models chirp acceleration, 8-shell merger burst, constant-speed (c_vis) propagation, and finite wavefront lifetime.
         """
-        # Auto-trigger wavefront emission when merger occurs (t_event >= 0.0)
-        if event_time < 0.0 and not self.manual_trigger:
+        if event_time < 0.0 and not self.manual_trigger and not merger_active:
             self.active = False
             self._clear_gpu_fields()
             return WavefrontState(
@@ -174,39 +225,62 @@ class GWWavefrontPropagation:
             )
 
         dt = max(0.0, event_time - self.launch_event_time)
-        # Visual-time adapter for smooth 3D world-space expanding wavefront shells
-        t_scale = 2.0
-        dt_vis = float(t_scale * np.log(1.0 + dt / t_scale)) if dt > 0.0 else 0.0
-        base_r = 15.0e3 + self.c_vis * dt_vis
+
+        # Representative leading wavefront radius for physics/telemetry tests (expands at constant speed c_vis)
+        lead_r = 15.0e3 + self.c_vis * dt
+
+        # 8 emission offsets (t_emit <= 0) relative to peak merger (t_event = 0).
+        # Accelerating emission spacing (chirp) during inspiral leading to peak merger burst.
+        t_emit_offsets = [0.00, -0.06, -0.14, -0.24, -0.38, -0.56, -0.80, -1.15]
+        # Visual emission amplitude hierarchy: peak at merger (1.0), late inspiral moderate (0.7-0.9), early subtle (0.35-0.5)
+        shell_amps = [1.00, 0.95, 0.88, 0.78, 0.65, 0.52, 0.42, 0.35]
+
+        r_min = 32.0e3
+        r_max = 300.0e3
+
+        shell_radii = np.zeros(self.n_rings, dtype=np.float32)
+        shell_active = np.zeros(self.n_rings, dtype=np.int32)
+        shell_amplitudes = np.zeros(self.n_rings, dtype=np.float32)
+
+        for k, t_emit in enumerate(t_emit_offsets):
+            if k >= self.n_rings:
+                break
+            if self.manual_trigger:
+                age = dt - t_emit
+            else:
+                age = event_time - t_emit
+
+            # Front is born at age >= 0 and expands at constant physical speed c_vis
+            if age >= 0.0:
+                r_k = r_min + self.c_vis * age
+                # Finite Lifetime: front is active ONLY while inside local visual volume [r_min, r_max]
+                if r_min <= r_k <= r_max:
+                    shell_radii[k] = float(r_k)
+                    shell_active[k] = 1
+                    shell_amplitudes[k] = float(shell_amps[k])
+
+        self.gpu_shell_radii.from_numpy(shell_radii)
+        self.gpu_shell_active.from_numpy(shell_active)
+        self.gpu_shell_amplitudes.from_numpy(shell_amplitudes)
 
         # Strain magnitude modulation driver
         h_mag = float(np.sqrt(h_plus**2 + h_cross**2))
         h_strain_norm = float(np.clip(h_mag / 1.0e-21, 0.25, 3.0)) if h_mag > 0.0 else 1.0
 
-        wavelength = max(18.0e3, 3.0e8 / max(20.0, f_gw) * 0.0008)  # Visual wavelength
-
-        active_shells = 0
-        for shell_i in range(self.n_rings):
-            r_shell = base_r - shell_i * wavelength * 2.2
-            if r_shell >= 5.0e3:
-                active_shells += 1
-
-        n_active_vertices = active_shells * self.n_lat_rings * self.pts_per_ring * 2
+        n_active_vertices = self.total_vertices
 
         self._update_wavefront_gpu_kernel(
             1 if self.active else 0,
-            float(base_r),
-            float(wavelength),
-            float(h_strain_norm)
+            float(h_strain_norm),
+            float(intensity_scale)
         )
 
         return WavefrontState(
             active=True,
             launch_time=self.launch_event_time,
             current_time=event_time,
-            radius=base_r,
-            amplitude=float(1.0 / (1.0 + base_r / 80.0e3)),
+            radius=lead_r,
+            amplitude=float(1.0 / (1.0 + lead_r / 80.0e3)),
             f_gw=f_gw,
             n_vertices=n_active_vertices
         )
-

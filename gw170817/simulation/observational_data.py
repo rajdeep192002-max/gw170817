@@ -36,6 +36,9 @@ class ObservationalGWData:
         self.conditioning_band = "20-2000 Hz"
         self.processing_notes = "GWOSC GW170817 cleaned strain data"
 
+        self._cached_key: Optional[Tuple[float, float, int, int]] = None
+        self._cached_window: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+
         self.load()
 
     def load(self) -> bool:
@@ -61,6 +64,9 @@ class ObservationalGWData:
             if "processing_notes" in data:
                 self.processing_notes = str(data["processing_notes"])
 
+            self._cached_key = None
+            self._cached_window = None
+
             self.loaded = True
             return True
         except Exception as e:
@@ -83,11 +89,22 @@ class ObservationalGWData:
         """
         Return sliding window (t_window, h1_window, l1_window) centered around t_center [s].
         Decimated to n_samples for low-overhead GPU line buffer visualization.
+        Caches interpolation results for identical input parameters.
         """
+        dataset_id = id(self.relative_time)
+        cache_key = (float(t_center), float(window_sec), int(n_samples), dataset_id)
+
+        if self._cached_window is not None and self._cached_key == cache_key:
+            tw, h1w, l1w = self._cached_window
+            return tw.copy(), h1w.copy(), l1w.copy()
+
         if not self.loaded or len(self.relative_time) == 0:
             t_dummy = np.linspace(t_center - window_sec * 0.5, t_center + window_sec * 0.5, n_samples, dtype=np.float32)
             zeros = np.zeros(n_samples, dtype=np.float32)
-            return t_dummy, zeros, zeros
+            res = (t_dummy, zeros, zeros)
+            self._cached_key = cache_key
+            self._cached_window = res
+            return t_dummy.copy(), zeros.copy(), zeros.copy()
 
         half_w = window_sec * 0.5
         t_min = t_center - half_w
@@ -106,11 +123,18 @@ class ObservationalGWData:
         if len(sub_t) < 2:
             t_dummy = np.linspace(t_min, t_max, n_samples, dtype=np.float32)
             zeros = np.zeros(n_samples, dtype=np.float32)
-            return t_dummy, zeros, zeros
+            res = (t_dummy, zeros, zeros)
+            self._cached_key = cache_key
+            self._cached_window = res
+            return t_dummy.copy(), zeros.copy(), zeros.copy()
 
         # Resample smoothly to n_samples using linear interpolation
         t_out = np.linspace(t_min, t_max, n_samples, dtype=np.float32)
         h1_out = np.interp(t_out, sub_t, sub_h1).astype(np.float32)
         l1_out = np.interp(t_out, sub_t, sub_l1).astype(np.float32)
 
-        return t_out, h1_out, l1_out
+        res = (t_out, h1_out, l1_out)
+        self._cached_key = cache_key
+        self._cached_window = res
+
+        return t_out.copy(), h1_out.copy(), l1_out.copy()

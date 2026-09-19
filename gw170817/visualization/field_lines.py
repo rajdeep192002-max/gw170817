@@ -34,6 +34,7 @@ class MagneticFieldLines:
         delta_omega: ti.f32,
         event_time: ti.f32,
         phi_rot_wrapped: ti.f32,
+        intensity_scale: ti.f32,
     ):
         """
         Taichi kernel updating 3D helical magnetic field line vertices on GPU.
@@ -48,17 +49,22 @@ class MagneticFieldLines:
 
             # Winding pitch depends on B_tor / B_pol ratio (differential rotation winding)
             b_ratio = b_tor / ti.max(1.0e10, b_pol)
-            pitch = ti.min(8.0, 3.0 * b_ratio)
+            pitch = ti.min(5.0, 1.8 * b_ratio)
 
-            # Scale height and intensity progressively as differential rotation winds field lines
-            w_growth = ti.max(0.12, ti.min(1.0, winding_progress))
+            # Growth factor smoothstep bounded [0.15, 1.0]
+            w_growth = ti.max(0.15, ti.min(1.0, winding_progress))
 
-            # Restrained intensity scales with poloidal field strength & winding progress
-            intensity = ti.min(0.45, (0.10 + 0.35 * (b_pol / 1.0e14)) * w_growth)
+            # Restrained luminous intensity scales with field strength and winding
+            intensity = ti.min(0.42, (0.15 + 0.25 * (b_pol / 1.0e14)) * w_growth) * intensity_scale
+
+            # Distributed multi-shell equatorial radii spanning 20 km to 43 km around remnant
+            shell_mod = float(l % 4)
+            r_eq = (r_rem * 1.30 + (7.5e3 + shell_mod * 5.5e3) * w_growth)
+            z_scale = 0.55 * r_eq
 
             # Accumulated differential rotation shear phase (dphi/dt ~ delta_omega)
             t_eff = ti.max(0.0, ti.min(10.0, event_time))
-            shear_accum = (delta_omega / 1.0e3) * t_eff * 15.0 * w_growth
+            shear_accum = (delta_omega / 1.0e3) * t_eff * 6.0 * w_growth
 
             for s in range(self.n_segments - 1):
                 idx = 2 * (l * (self.n_segments - 1) + s)
@@ -69,29 +75,31 @@ class MagneticFieldLines:
                     self.line_colors[idx]       = ti.Vector([0.0, 0.0, 0.0])
                     self.line_colors[idx + 1]   = ti.Vector([0.0, 0.0, 0.0])
                 else:
-                    # Parameter t in [0, 1] along poloidal dipole loop from north to south
-                    t0 = float(s) / float(self.n_segments - 1)
-                    t1 = float(s + 1) / float(self.n_segments - 1)
+                    # Normalized parameter u in [-1.0, +1.0] along loop from north to south
+                    u0 = -1.0 + 2.0 * (float(s) / float(self.n_segments - 1))
+                    u1 = -1.0 + 2.0 * (float(s + 1) / float(self.n_segments - 1))
 
-                    theta0 = 0.15 * pi + t0 * 0.70 * pi
-                    theta1 = 0.15 * pi + t1 * 0.70 * pi
+                    theta0 = 0.50 * pi + u0 * (0.36 * pi)
+                    theta1 = 0.50 * pi + u1 * (0.36 * pi)
 
-                    # Radius grows toward equatorial plane (theta = pi/2), shrinks toward poles
                     sin_th0 = ti.sin(theta0)
                     cos_th0 = ti.cos(theta0)
                     sin_th1 = ti.sin(theta1)
                     cos_th1 = ti.cos(theta1)
 
-                    r0 = r_rem * (1.1 + 1.2 * sin_th0 * sin_th0) * w_growth
-                    r1 = r_rem * (1.1 + 1.2 * sin_th1 * sin_th1) * w_growth
+                    # Smooth dipole radial profile: compact at footpoints, reaching r_eq at equator
+                    r0 = r_rem * 1.05 + (r_eq - r_rem * 1.05) * (sin_th0 * sin_th0)
+                    r1 = r_rem * 1.05 + (r_eq - r_rem * 1.05) * (sin_th1 * sin_th1)
 
-                    z0 = 34.0e3 * w_growth * cos_th0 / (sin_th0 + 0.18)
-                    z1 = 34.0e3 * w_growth * cos_th1 / (sin_th1 + 0.18)
+                    # Arched oblate loop height (strictly bounded |z| <= 13 km)
+                    z0 = -z_scale * cos_th0 * sin_th0
+                    z1 = -z_scale * cos_th1 * sin_th1
 
-                    # Azimuthal helical twist: static phi0 + B_phi/B_p pitch + radius-dependent differential winding + 3D global rotation
-                    w_rad0 = ti.pow(r_rem / ti.max(1.0, r0), 1.1)
-                    w_rad1 = ti.pow(r_rem / ti.max(1.0, r1), 1.1)
+                    # Radius-dependent differential winding (inner loops wind faster than outer)
+                    w_rad0 = ti.pow(r_rem / ti.max(1.0, r0), 1.2)
+                    w_rad1 = ti.pow(r_rem / ti.max(1.0, r1), 1.2)
 
+                    # Azimuthal twist: base phi0 + toroidal pitch shear + accumulated differential winding + 3D core rotation
                     tw0 = (phi0 + pitch * cos_th0 + shear_accum * w_rad0 + phi_rot_wrapped) % two_pi
                     tw1 = (phi0 + pitch * cos_th1 + shear_accum * w_rad1 + phi_rot_wrapped) % two_pi
 
@@ -104,11 +112,11 @@ class MagneticFieldLines:
                     self.line_vertices[idx]     = ti.Vector([x0, y0, z0])
                     self.line_vertices[idx + 1] = ti.Vector([x1, y1, z1])
 
-                    # Color palette: Poloidal dipole core = electric cyan; Toroidal winding = gold/magenta
-                    w_factor = ti.min(1.0, pitch / 6.0)
-                    r_c = (0.2 * (1.0 - w_factor) + 1.0 * w_factor) * intensity
-                    g_c = (0.85 * (1.0 - w_factor) + 0.5 * w_factor) * intensity
-                    b_c = (1.0 * (1.0 - w_factor) + 0.2 * w_factor) * intensity
+                    # Color palette: Poloidal electric cyan -> Toroidal golden amber with winding
+                    w_factor = ti.min(1.0, pitch / 4.0)
+                    r_c = (0.15 * (1.0 - w_factor) + 0.95 * w_factor) * intensity
+                    g_c = (0.82 * (1.0 - w_factor) + 0.72 * w_factor) * intensity
+                    b_c = (0.95 * (1.0 - w_factor) + 0.22 * w_factor) * intensity
 
                     col = ti.Vector([r_c, g_c, b_c])
                     self.line_colors[idx]     = col
@@ -124,6 +132,7 @@ class MagneticFieldLines:
         delta_omega: float = 0.0,
         event_time: float = 0.0,
         omega_rot: float = 120.0,
+        intensity_scale: float = 1.0,
     ):
         """Update 3D helical magnetic field lines on GPU with radius-dependent differential winding and continuous 3D rotation."""
         flag = 1 if is_active else 0
@@ -131,6 +140,6 @@ class MagneticFieldLines:
         self.update_field_lines_kernel(
             float(b_pol), float(b_tor), float(r_rem), flag,
             float(winding_progress), float(delta_omega), float(event_time),
-            float(phi_rot_wrapped)
+            float(phi_rot_wrapped), float(intensity_scale)
         )
 

@@ -10,8 +10,8 @@ from gw170817.constants import G, c, M_sun, Mpc
 @dataclass
 class SimConfig:
     # --- Binary Parameters (GW170817) ---
-    m1_solar: float = 1.36               # Primary NS mass [M_sun]
-    m2_solar: float = 1.36               # Secondary NS mass [M_sun]
+    m1_solar: float = 1.46               # Primary NS mass [M_sun] (Abbott et al. 2017/2019 GW170817 low-spin median)
+    m2_solar: float = 1.27               # Secondary NS mass [M_sun] (Abbott et al. 2017/2019 GW170817 low-spin median)
     distance_Mpc: float = 40.0           # Luminosity distance [Mpc]
     
     # Initial Frequencies
@@ -66,6 +66,11 @@ class SimConfig:
     def M_total(self) -> float:
         """Total mass in kg."""
         return self.m1 + self.m2
+
+    @property
+    def mass_ratio(self) -> float:
+        """Mass ratio q = m2 / m1 (<= 1.0)."""
+        return self.m2 / self.m1
 
     @property
     def distance(self) -> float:

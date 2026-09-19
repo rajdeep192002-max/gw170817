@@ -1,4 +1,4 @@
-﻿"""
+"""
 Reduced-order tidal-deformability model for GW170817.
 
 REDUCED-ORDER APPROXIMATION:
@@ -32,9 +32,14 @@ class TidalState:
     separation: float           # Orbital separation a [m]
     star1: TidalStar            # Primary NS tidal parameters
     star2: TidalStar            # Secondary NS tidal parameters
-    tidal_distortion_1: float   # Instantaneous tidal deformation factor star 1
-    tidal_distortion_2: float   # Instantaneous tidal deformation factor star 2
+    tidal_distortion_1: float   # Instantaneous geometric tidal scaling factor star 1 (R1/a)^3
+    tidal_distortion_2: float   # Instantaneous geometric tidal scaling factor star 2 (R2/a)^3
     lambda_tilde: float         # Effective binary tidal deformability Lambda_tilde
+    tidal_response_1: float = 0.0     # Quadrupolar response eta_1 ~ (3/2) Lambda_1 C_1^5 (M2/M1) (R1/a)^3
+    tidal_response_2: float = 0.0     # Quadrupolar response eta_2 ~ (3/2) Lambda_2 C_2^5 (M1/M2) (R2/a)^3
+    tidal_elongation_1: float = 0.0   # Visual prolate elongation factor epsilon_1
+    tidal_elongation_2: float = 0.0   # Visual prolate elongation factor epsilon_2
+    relative_tidal_strength: float = 0.0 # Relative strength (a_contact / a)^3 in [0, 1]
 
 
 class TidalModel:
@@ -42,6 +47,8 @@ class TidalModel:
     Physics-informed reduced-order tidal deformability model.
     Evolves tidal responses driven by InspiralState.
     """
+
+    VISUAL_TIDAL_COUPLING: float = 22.0
 
     def __init__(
         self,
@@ -107,9 +114,25 @@ class TidalModel:
         if a <= 0.0 or not np.isfinite(a):
             raise ValueError(f"Invalid separation for tidal evaluation: {a}")
 
-        # Dimensionless quadrupolar tidal interaction scaling: (R / a)^3
+        # Dimensionless geometric tidal interaction scaling: (R / a)^3
         dist1 = (self.star1.radius / a)**3
         dist2 = (self.star2.radius / a)**3
+
+        # Physical quadrupolar tidal response:
+        # eta_1 = (3/2) * Lambda_1 * C_1^5 * (M_2 / M_1) * (R_1 / a)^3 = k2_1 * (M_2 / M_1) * dist1
+        # eta_2 = (3/2) * Lambda_2 * C_2^5 * (M_1 / M_2) * (R_2 / a)^3 = k2_2 * (M_1 / M_2) * dist2
+        q_resp_1 = (1.5 * self.star1.lambda_dimensionless * (self.star1.compactness**5) *
+                    (self.star2.mass / self.star1.mass) * dist1)
+        q_resp_2 = (1.5 * self.star2.lambda_dimensionless * (self.star2.compactness**5) *
+                    (self.star1.mass / self.star2.mass) * dist2)
+
+        # Calibrated visual prolate elongation: subtle at large separation, up to ~19-25% at contact
+        elong_1 = min(0.35, self.VISUAL_TIDAL_COUPLING * q_resp_1)
+        elong_2 = min(0.35, self.VISUAL_TIDAL_COUPLING * q_resp_2)
+
+        # Relative tidal response normalized to contact separation (a_contact = R1 + R2 = 24 km)
+        a_contact = self.star1.radius + self.star2.radius
+        rel_strength = min(1.0, max(0.0, (a_contact / a)**3))
 
         return TidalState(
             separation=a,
@@ -117,7 +140,12 @@ class TidalModel:
             star2=self.star2,
             tidal_distortion_1=dist1,
             tidal_distortion_2=dist2,
-            lambda_tilde=self.lambda_tilde
+            lambda_tilde=self.lambda_tilde,
+            tidal_response_1=q_resp_1,
+            tidal_response_2=q_resp_2,
+            tidal_elongation_1=elong_1,
+            tidal_elongation_2=elong_2,
+            relative_tidal_strength=rel_strength
         )
 
     def initial_state(self) -> TidalState:
@@ -126,11 +154,27 @@ class TidalModel:
         dist1 = (self.star1.radius / a0)**3
         dist2 = (self.star2.radius / a0)**3
 
+        q_resp_1 = (1.5 * self.star1.lambda_dimensionless * (self.star1.compactness**5) *
+                    (self.star2.mass / self.star1.mass) * dist1)
+        q_resp_2 = (1.5 * self.star2.lambda_dimensionless * (self.star2.compactness**5) *
+                    (self.star1.mass / self.star2.mass) * dist2)
+
+        elong_1 = min(0.35, self.VISUAL_TIDAL_COUPLING * q_resp_1)
+        elong_2 = min(0.35, self.VISUAL_TIDAL_COUPLING * q_resp_2)
+
+        a_contact = self.star1.radius + self.star2.radius
+        rel_strength = min(1.0, max(0.0, (a_contact / a0)**3))
+
         return TidalState(
             separation=a0,
             star1=self.star1,
             star2=self.star2,
             tidal_distortion_1=dist1,
             tidal_distortion_2=dist2,
-            lambda_tilde=self.lambda_tilde
+            lambda_tilde=self.lambda_tilde,
+            tidal_response_1=q_resp_1,
+            tidal_response_2=q_resp_2,
+            tidal_elongation_1=elong_1,
+            tidal_elongation_2=elong_2,
+            relative_tidal_strength=rel_strength
         )

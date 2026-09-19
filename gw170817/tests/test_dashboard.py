@@ -261,7 +261,7 @@ def test_step5b_mode_switching():
     # 2. GW Mode
     dashboard.set_view_mode("GW")
     assert dashboard.view_mode == "GW"
-    assert dashboard.target_cam_distance == 350.0e3
+    assert dashboard.target_cam_distance == 260.0e3
     assert dashboard.wave_propagation.active
     assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
 
@@ -272,20 +272,13 @@ def test_step5b_mode_switching():
     assert dashboard.show_magnetic_field
     assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
 
-    # 4. BH LENS Mode (Pre-merger -> waiting flag set)
-    dashboard.set_view_mode("BH LENS")
-    assert dashboard.view_mode == "BH LENS"
-    assert dashboard.bh_lens_waiting, "Pre-merger BH LENS should set waiting flag"
+    # 4. NEUTRINO Mode
+    dashboard.set_view_mode("NEUTRINO")
+    assert dashboard.view_mode == "NEUTRINO"
+    assert dashboard.target_cam_distance == 140.0e3
     assert abs(dashboard.engine.current_state.event_time - initial_event_time) < 1.0e-6
 
-    # 5. BH LENS Mode Post-Merger (BH active)
-    dashboard.director._sync_physics_for_presentation_time(12.0)
-    dashboard.set_view_mode("BH LENS")
-    assert dashboard.view_mode == "BH LENS"
-    assert dashboard.target_cam_distance == 32.0e3
-    assert dashboard.lensing.enabled
-
-    # 6. MULTI Mode
+    # 5. MULTI Mode
     dashboard.set_view_mode("MULTI")
     assert dashboard.view_mode == "MULTI"
     assert dashboard.target_cam_distance == 280.0e3

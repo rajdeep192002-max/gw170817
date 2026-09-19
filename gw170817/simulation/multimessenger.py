@@ -72,7 +72,14 @@ class MultiMessengerEventState:
     b_ratio: float                 # Magnetic winding ratio B_phi / B_p
     mri_active: bool               # True if Magnetorotational Instability active
     poynting_luminosity: float     # Poynting flux output [W]
-    neutrino_luminosity: float     # Neutrino emission luminosity [W]
+    neutrino_luminosity: float     # Neutrino total emission luminosity [W]
+    neutrino_luminosity_nue: float # Electron neutrino luminosity L_nue [W]
+    neutrino_luminosity_nue_bar: float  # Electron antineutrino luminosity L_nue_bar [W]
+    neutrino_luminosity_nux: float # Heavy-flavor neutrino luminosity L_nux [W]
+    neutrino_mean_energy_mev: float     # Mean neutrino energy <E_nu> [MeV]
+    neutrino_wind_mass_loss_rate: float # Neutrino-driven wind mass-loss rate [kg/s]
+    neutrino_is_active: bool       # True if neutrino emission active post-merger
+    neutrino_transport_active: bool# True if neutrino transport field active post-merger
 
     # Observational Validation Channel
     validation_passed: bool        # True if all validation checks pass
@@ -303,6 +310,13 @@ class MultiMessengerCoordinator:
             mri_active=mag_st.mri_active,
             poynting_luminosity=mag_st.poynting_luminosity,
             neutrino_luminosity=nu_st.luminosity_total,
+            neutrino_luminosity_nue=nu_st.luminosity_nue,
+            neutrino_luminosity_nue_bar=nu_st.luminosity_nue_bar,
+            neutrino_luminosity_nux=getattr(nu_st, "luminosity_nux", 0.0),
+            neutrino_mean_energy_mev=nu_st.mean_energy_mev,
+            neutrino_wind_mass_loss_rate=nu_st.wind_mass_loss_rate,
+            neutrino_is_active=nu_st.is_active,
+            neutrino_transport_active=getattr(nu_st, "transport_active", False),
             validation_passed=val_rep.all_passed,
             validation_passed_count=sum(1 for r in val_rep.results if r.passed),
             validation_total_count=len(val_rep.results)

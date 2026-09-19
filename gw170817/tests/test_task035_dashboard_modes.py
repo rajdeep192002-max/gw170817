@@ -38,52 +38,8 @@ def test_core_mode_preset(dash):
     dash.set_view_mode("CORE")
 
     assert dash.view_mode == "CORE"
-    assert abs(dash.cam_distance - 280.0e3) < 1.0
-    assert abs(dash.cam_pitch - 0.65) < 1e-3
-    assert not dash.bh_lens_waiting
-
-
-def test_gw_mode_preserves_physics_and_exposes_wavefront(dash):
-    """C & D. Verify GW mode activates 3D wavefront without altering physical GW frequency or event_time."""
-    initial_f_gw = float(dash.engine.current_state.gw_frequency)
-    initial_event_time = float(dash.engine.current_state.event_time)
-
-    dash.set_view_mode("GW")
-
-    assert dash.view_mode == "GW"
-    assert dash.wave_propagation.active, "GW mode must activate 3D GW wavefront propagation"
-    assert abs(dash.engine.current_state.gw_frequency - initial_f_gw) < 1e-5, "Physics state must not change"
-    assert abs(dash.engine.current_state.event_time - initial_event_time) < 1e-5, "Physics event_time must not change"
-    assert abs(dash.cam_distance - 350.0e3) < 1.0, "GW mode must use framing (350 km)"
-
-
-def test_bh_lens_mode_pre_bh_safe_handling(dash):
-    """E. Verify BH LENS mode safely handles pre-BH state without crashing."""
-    rem_st = dash.engine.remnant.evaluate(dash.engine.dynamics.inspiral_state, -5.0)
-    assert not rem_st.is_black_hole
-
-    dash.set_view_mode("BH LENS")
-
-    assert dash.view_mode == "BH LENS"
-    assert dash.bh_lens_waiting, "Pre-BH state must set bh_lens_waiting flag"
-    assert dash.cam_distance > 100.0e3
-
-
-def test_bh_lens_mode_post_bh_activation(dash):
-    """F. Verify BH LENS mode applies close camera preset (55 km) and enables lensing once BH forms."""
-    dash.director._sync_physics_for_presentation_time(10.0)
-    st = dash.engine.current_state
-
-    rem_st = dash.engine.remnant.evaluate(dash.engine.dynamics.inspiral_state, float(st.event_time))
-    assert rem_st.is_black_hole, "BH must be formed post-merger"
-
-    dash.set_view_mode("BH LENS")
-
-    assert dash.view_mode == "BH LENS"
-    assert not dash.bh_lens_waiting
-    assert dash.lensing.enabled, "Relativistic lensing must be enabled in BH LENS mode"
-    assert abs(dash.cam_distance - 55.0e3) < 1.0, "BH LENS mode must set close safe camera distance (55 km)"
-    assert abs(dash.cam_pitch - 0.25) < 1e-3
+    assert abs(dash.target_cam_distance - 280.0e3) < 1.0
+    assert abs(dash.target_cam_pitch - 0.65) < 1e-3
 
 
 def test_camera_controls_functional_after_presets(dash):

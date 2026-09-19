@@ -41,9 +41,9 @@ class RelativisticLensingModel:
         self.enhanced_mode = False
 
         # Physical compactness calculation u = 2GM / (c^2 R)
-        # Standard GW170817 reference configuration: m1 = 1.36 M_sun, m2 = 1.36 M_sun, R1 = 12.0 km, R2 = 12.0 km
-        self.m1 = getattr(config, "m1", 1.36 * M_sun)
-        self.m2 = getattr(config, "m2", 1.36 * M_sun)
+        # GW170817 reference configuration: m1 = 1.46 M_sun, m2 = 1.27 M_sun, R1 = 11.5 km, R2 = 11.5 km
+        self.m1 = getattr(config, "m1", 1.46 * M_sun)
+        self.m2 = getattr(config, "m2", 1.27 * M_sun)
         self.r1 = getattr(config, "R_NS1", 12.0e3)
         self.r2 = getattr(config, "R_NS2", 12.0e3)
 

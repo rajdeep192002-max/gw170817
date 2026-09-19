@@ -18,6 +18,13 @@ from gw170817.visualization.field_lines import MagneticFieldLines
 
 @pytest.fixture(scope="module")
 def field_lines():
+    try:
+        ti.init(arch=ti.vulkan)
+    except Exception:
+        try:
+            ti.init(arch=ti.cpu)
+        except Exception:
+            pass
     return MagneticFieldLines(n_lines=20, segments_per_line=16)
 
 

@@ -8,7 +8,7 @@ It is generated directly from the orbital state (separation, phase, frequency)
 of the binary inspiral model.
 """
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 import numpy as np
 from gw170817.constants import G, c
 from gw170817.config import SimConfig
@@ -128,6 +128,9 @@ class WaveformBuffer:
         self._size = 0       # Current number of valid samples stored
         self._total_appended = 0
 
+        self._cached_appended_count: int = -1
+        self._cached_chronological: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = None
+
     def append(self, sample: WaveformSample):
         """Append a WaveformSample into the circular buffer, skipping exact duplicate samples."""
         if self._size > 0:
@@ -152,14 +155,19 @@ class WaveformBuffer:
         """
         Retrieve chronological arrays (time, h_plus, h_cross, f_gw) for display.
         Returns slices/copies ordered from oldest to newest sample.
+        Caches chronological representation to avoid np.roll and array copies on unchanged buffers.
         """
         if self._size == 0:
             empty = np.array([], dtype=np.float64)
             return empty, empty, empty, empty
 
+        if self._cached_chronological is not None and self._cached_appended_count == self._total_appended:
+            t, hp, hc, fgw = self._cached_chronological
+            return t.copy(), hp.copy(), hc.copy(), fgw.copy()
+
         if self._size < self.capacity:
             # Buffer not yet wrapped
-            return (
+            res = (
                 self._time[:self._size].copy(),
                 self._h_plus[:self._size].copy(),
                 self._h_cross[:self._size].copy(),
@@ -169,12 +177,16 @@ class WaveformBuffer:
             # Buffer wrapped: head points to oldest sample
             idx_start = self._head
             order = np.roll(np.arange(self.capacity), -idx_start)
-            return (
+            res = (
                 self._time[order].copy(),
                 self._h_plus[order].copy(),
                 self._h_cross[order].copy(),
                 self._f_gw[order].copy(),
             )
+
+        self._cached_chronological = res
+        self._cached_appended_count = self._total_appended
+        return res[0].copy(), res[1].copy(), res[2].copy(), res[3].copy()
 
     @property
     def is_full(self) -> bool:

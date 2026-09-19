@@ -65,6 +65,12 @@ class RemnantModel:
             self.t_collapse_delay = getattr(config, "HMNS_LIFETIME", 0.08)
             self.spin_final = 0.70
 
+        self._has_collapsed: bool = False
+
+    def reset(self):
+        """Reset remnant model collapse state."""
+        self._has_collapsed = False
+
     def evaluate(self, inspiral_state: InspiralState, event_time: float) -> RemnantState:
         """
         Evaluate remnant state at physical event time t [s] relative to merger.
@@ -87,8 +93,11 @@ class RemnantModel:
                 collapse_time=self.t_collapse_delay
             )
 
-        # Post-merger phase (t >= 0.0 s)
-        is_bh = bool(event_time >= self.t_collapse_delay)
+        # Post-merger phase (t >= 0.0 s): Monotonic delayed collapse to persistent Black Hole
+        if event_time >= self.t_collapse_delay:
+            self._has_collapsed = True
+
+        is_bh = bool(self._has_collapsed or event_time >= self.t_collapse_delay)
         remnant_type = "BH" if is_bh else "HMNS"
 
         # Mass loss to ejecta and GWs during merger (~3-5% total mass)

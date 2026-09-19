@@ -192,14 +192,12 @@ class DemoDirector:
             self.coordinator.evaluate_at_event_time(t_event_merger)
 
         else:
-            # RINGDOWN / CONTINUOUS_POST_MERGER (>=9s pres): event_time 1.74 s → 200+ days
+            # RINGDOWN / CONTINUOUS_POST_MERGER (>=9s pres): continuous physical event_time
             if self._presentation_time > self.total_presentation_duration:
                 self._stage = DemoStage.CONTINUOUS_POST_MERGER
-                dt_ext = self._presentation_time - self.total_presentation_duration
-                t_ag = 200.0 * 86400.0 + dt_ext * 86400.0
-            else:
-                frac_ringdown = (p_tot - p_merger) / (1.0 - p_merger)
-                t_ag = 1.74 + frac_ringdown * (200.0 * 86400.0 - 1.74)
+
+            # Physical event_time advances continuously from 1.74 s at t_pres = 9.0 s
+            t_ag = 1.74 + (self._presentation_time - 9.0)
             self.coordinator.evaluate_at_event_time(t_ag)
 
         # Sample GW model from the exact InspiralState driving the NS positions & event state

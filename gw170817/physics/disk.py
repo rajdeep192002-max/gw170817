@@ -88,13 +88,13 @@ class DiskModel:
         if rotational_state is not None:
             tau_visc = max(0.05, rotational_state.transport_timescale * 10.0)
 
-        # Post-merger disk growth -> viscous decay
+        # Post-merger disk growth -> viscous decay with self-similar late-time power-law accretion tail (Metzger 2019, Hayashi et al. 2025)
         growth_factor = 1.0 - np.exp(-event_time / 0.01)
-        decay_factor = np.exp(-event_time / tau_visc)
+        decay_factor = float(np.exp(-min(event_time / tau_visc, 15.0)) + 2.0e-3 / ((1.0 + event_time / tau_visc) ** 0.5))
         m_disk = self.M_disk_0 * growth_factor * decay_factor
 
-        # Accretion rate M_dot = M_disk / tau_visc
-        mdot = (self.M_disk_0 / tau_visc) * growth_factor * decay_factor
+        # Accretion rate M_dot = M_disk / tau_visc (continuous and positive for all post-merger times)
+        mdot = (m_disk / tau_visc)
 
         # Aspect ratio H/R ~ 0.2 - 0.25 (thick advection-dominated disk)
         h_over_r = 0.22 * (1.0 + 0.1 * np.exp(-event_time / 0.1))
