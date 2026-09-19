@@ -54,8 +54,8 @@ class MagneticFieldLines:
             # Growth factor smoothstep bounded [0.15, 1.0]
             w_growth = ti.max(0.15, ti.min(1.0, winding_progress))
 
-            # Restrained luminous intensity scales with field strength and winding
-            intensity = ti.min(0.42, (0.15 + 0.25 * (b_pol / 1.0e14)) * w_growth) * intensity_scale
+            # Luminous intensity scales with field strength and winding (bounded to 0.45 at intensity_scale=1.0)
+            intensity = ti.min(0.45, (0.22 + 0.23 * (b_pol / 1.0e14)) * w_growth) * intensity_scale
 
             # Distributed multi-shell equatorial radii spanning 20 km to 43 km around remnant
             shell_mod = float(l % 4)

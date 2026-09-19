@@ -107,6 +107,7 @@ class ScientificDashboard:
         self.cam_pitch_max: float = np.pi / 2.0 - 0.05
         self._last_mouse_pos: tuple[float, float] | None = None
         self._smoothed_dt_cam: float = 0.016
+        self.show_controls_overlay: bool = False
 
         self._setup_default_camera()
 
@@ -136,40 +137,38 @@ class ScientificDashboard:
             self.target_cam_yaw = -np.pi / 2.0
             self.target_cam_pitch = 0.65
             self.is_interpolating_cam = True
-            print("[View Mode] Set to CORE — Flagship Black Hole & Binary Dynamics Evolution")
+            print("[View Mode] Set to CORE -- Flagship Black Hole & Binary Dynamics Evolution")
 
-        elif mode == "GW":
-            # Framed to make 3D world-space expanding wavefront shells clearly readable
+        elif mode in ["GW", "GW MODE"]:
+            self.view_mode = "GW"
             self.target_cam_distance = 260.0e3
             self.target_cam_yaw = -np.pi / 2.0
             self.target_cam_pitch = 0.58
             self.is_interpolating_cam = True
             self.wave_propagation.active = True
             self.wave_propagation.manual_trigger = False
-            print("[View Mode] Set to GW MODE — Quadrupole Radiation & 3D Wavefront Propagation")
+            print("[View Mode] Set to GW MODE -- Quadrupole Radiation & 3D Wavefront Propagation")
 
         elif mode == "MAGNETIC FIELD":
-            # Framing that clearly shows central remnant/BH, field-line topology, winding, and jet base
             self.cam_distance = self.target_cam_distance = 160.0e3
             self.cam_pitch = self.target_cam_pitch = 0.45
             self.target_cam_yaw = -np.pi / 2.0
             self.is_interpolating_cam = True
-            print("[View Mode] Set to MAGNETIC FIELD — Differential Rotation & Toroidal Winding")
+            print("[View Mode] Set to MAGNETIC FIELD -- Differential Rotation & Toroidal Winding")
 
         elif mode == "NEUTRINO":
-            # Close-in framing to show compact emission region and outward neutrino transport
             self.target_cam_distance = 140.0e3
             self.target_cam_yaw = -np.pi / 2.0
             self.target_cam_pitch = 0.40
             self.is_interpolating_cam = True
-            print("[View Mode] Set to NEUTRINO — Reduced-Order Neutrino Emission / Transport Model")
+            print("[View Mode] Set to NEUTRINO -- Reduced-Order Neutrino Emission / Transport Model")
 
         elif mode == "MULTI":
             self.target_cam_distance = 280.0e3
             self.target_cam_yaw = -np.pi / 2.0
             self.target_cam_pitch = 0.65
             self.is_interpolating_cam = True
-            print("[View Mode] Set to MULTI — Clean Multi-Messenger Story")
+            print("[View Mode] Set to MULTI -- Clean Multi-Messenger Story")
 
     def _setup_default_camera(self):
         """Set up fixed scientific 3D camera viewing orbital plane."""
@@ -453,11 +452,13 @@ class ScientificDashboard:
                 st = self.engine.current_state
                 if self.director.is_running and not self.director.is_paused:
                     self.chirp_audio.resume_playback(st.event_time, self.director.speed_multiplier)
+                self.show_controls_overlay = False
                 print("[Playback Mode] Set to REAL TIME (1.00x)")
 
             elif key in ['2']:
                 self.director.set_slow_motion()
                 self.chirp_audio.stop_playback()
+                self.show_controls_overlay = True
                 print("[Playback Mode] Set to SLOW MOTION (0.10x)")
 
             elif key in ['t', 'T']:
@@ -467,6 +468,7 @@ class ScientificDashboard:
                     self.chirp_audio.resume_playback(st.event_time, 1.00)
                 else:
                     self.chirp_audio.stop_playback()
+                self.show_controls_overlay = self.director.is_slow_motion
                 print(f"[Playback Mode] Toggled to {self.director.playback_mode_str} ({self.director.speed_multiplier:.2f}x)")
 
             elif key in ['+', '=']:
@@ -576,7 +578,7 @@ class ScientificDashboard:
 
         # 1. TOP CENTER: Header & Mode Selector
         gui.begin("GW170817 Multi-Messenger Event", 0.12, 0.01, 0.76, 0.09)
-        gui.text("GW170817 • BINARY NEUTRON-STAR MERGER   |   SIMULATION • LIVE   |   REDUCED-ORDER RELATIVISTIC MODEL")
+        gui.text("GW170817 | BINARY NEUTRON-STAR MERGER   |   SIMULATION - LIVE   |   REDUCED-ORDER RELATIVISTIC MODEL")
 
         if gui.button(" [ CORE ] " if self.view_mode == "CORE" else " CORE "):
             self.set_view_mode("CORE")
@@ -594,7 +596,7 @@ class ScientificDashboard:
             "CORE": ("CORE", "Binary dynamics, merger evolution, black hole lensing & polar jet"),
             "GW": ("GW PROPAGATION", "Quadrupole radiation from the accelerating binary"),
             "MAGNETIC FIELD": ("MAGNETIC FIELD", "Differential rotation winds the magnetic field"),
-            "NEUTRINO": ("NEUTRINO EMISSION", "Reduced-order neutrino emission / transport model — NO CONFIRMED DETECTION"),
+            "NEUTRINO": ("NEUTRINO EMISSION", "Reduced-order neutrino emission / transport model -- NO CONFIRMED DETECTION"),
             "MULTI": ("MULTI-MESSENGER", "One neutron-star merger, observed across multiple channels")
         }
         title, desc = mode_header_info.get(self.view_mode, ("GW170817", "Relativistic Visualization"))
@@ -614,19 +616,19 @@ class ScientificDashboard:
                 mode_specific_txt = (
                     "OBJECTS: [NEUTRON STAR A]\n"
                     "        [NEUTRON STAR B]\n"
-                    f"TIDAL:   QUADRUPOLAR (R/a)³\n"
-                    f"Λ_tilde: {self.engine.tidal.lambda_tilde:.0f} [MODEL]\n"
+                    f"TIDAL:   QUADRUPOLAR (R/a)^3\n"
+                    f"Lambda_tilde: {self.engine.tidal.lambda_tilde:.0f} [MODEL]\n"
                 )
             else:
                 m_bh = rem_st.mass / M_sun
                 rs_km = (2.0 * G * rem_st.mass / (c ** 2)) / 1.0e3
                 disk_m = evt_st.disk_mass_msun
-                disk_m_str = f"{disk_m:.2f} M☉" if disk_m >= 0.01 else f"{disk_m:.2e} M☉"
+                disk_m_str = f"{disk_m:.2f} M_sun" if disk_m >= 0.01 else f"{disk_m:.2e} M_sun"
                 obj_type = "BLACK HOLE" if rem_st.is_black_hole else "HMNS REMNANT"
                 if rem_st.is_black_hole:
                     mode_specific_txt = (
                         f"OBJECT:  [{obj_type}]\n"
-                        f"M_BH:    {m_bh:5.2f} M☉\n"
+                        f"M_BH:    {m_bh:5.2f} M_sun\n"
                         f"r_s:     {rs_km:5.1f} km\n"
                         f"DISK:    {disk_m_str}\n"
                         f"LENSING: REDUCED-ORDER SCHWARZSCHILD\n"
@@ -635,7 +637,7 @@ class ScientificDashboard:
                 else:
                     mode_specific_txt = (
                         f"OBJECT:  [{obj_type}]\n"
-                        f"M_REM:   {m_bh:5.2f} M☉\n"
+                        f"M_REM:   {m_bh:5.2f} M_sun\n"
                         f"r_rem:   {rs_km:5.1f} km\n"
                         f"DISK:    {disk_m_str}\n"
                         f"EJECTA:  ACTIVE\n"
@@ -643,18 +645,18 @@ class ScientificDashboard:
         elif self.view_mode == "GW":
             mode_specific_txt = (
                 f"f_GW:    {st.gw_frequency:6.1f} Hz\n"
-                f"STRAIN:  h+(t) Quadrupole\n"
-                f"FRONT:   [GRAVITATIONAL-WAVE FRONT]\n"
+                f"STRAIN:  h+(t) Quadrupole [MODEL]\n"
+                f"FRONT:   QUADRUPOLAR WAVEFRONT SHELLS [c_vis]\n"
             )
         elif self.view_mode == "MAGNETIC FIELD":
             b_pol = evt_st.b_poloidal
             b_tor = evt_st.b_toroidal
             b_ratio = evt_st.b_ratio
-            disk_line = f"DISK:    {evt_st.disk_mass_msun:.2f} M☉ [SECONDARY]\n" if evt_st.disk_mass_msun > 0.0 else ""
+            disk_line = f"DISK:    {evt_st.disk_mass_msun:.2f} M_sun [SECONDARY]\n" if evt_st.disk_mass_msun > 0.0 else ""
             mode_specific_txt = (
-                f"Bp (POLOIDAL): {b_pol:.1e} T\n"
-                f"Bφ (TOROIDAL): {b_tor:.1e} T\n"
-                f"Bφ/Bp WINDING: {b_ratio:5.2f}\n"
+                f"Bp (POLOIDAL):   {b_pol:.1e} G\n"
+                f"B_phi (TOROIDAL): {b_tor:.1e} G\n"
+                f"B_phi/B_p WINDING: {b_ratio:5.2f}\n"
                 f"{disk_line}"
                 f"[REDUCED-ORDER DYNAMO MODEL]\n"
             )
@@ -672,7 +674,7 @@ class ScientificDashboard:
                 f"EMISSION:  {nu_active_str} [MODEL]\n"
                 f"TRANSPORT: {nu_trans_str}\n"
                 f"L_nu:      {nu_lum_erg:.1e} erg/s\n"
-                f"<E_nu>:    {evt_st.neutrino_mean_energy_mev:.1f} MeV\n"
+                f"<E_nu_e>:  {evt_st.neutrino_mean_energy_mev:.1f} MeV\n"
                 f"[REDUCED-ORDER TRANSPORT]\n"
             )
 
@@ -683,7 +685,7 @@ class ScientificDashboard:
             f"EVENT TIME: t = {st.event_time:+7.2f} s\n"
             f"SEPARATION: a = {sep_km:6.1f} km\n"
             f"GW FREQ:    f = {st.gw_frequency:6.1f} Hz\n"
-            f"NS MASSES:  {self.config.m1_solar:.2f} + {self.config.m2_solar:.2f} M☉\n"
+            f"NS MASSES:  {self.config.m1_solar:.2f} + {self.config.m2_solar:.2f} M_sun\n"
             f"STATUS:     {status_str}\n"
             f"--------------------\n"
             f"{mode_specific_txt}"
@@ -707,13 +709,13 @@ class ScientificDashboard:
             resp_str = f"{t_state.relative_tidal_strength * 100.0:.0f}%" if t_state else "100%"
             state_info = (
                 f"SYSTEM: BINARY NEUTRON STAR\n"
-                f"NS1 (Cyan):  {self.config.m1_solar:.2f} M☉ [Approaching]\n"
-                f"NS2 (Gold):  {self.config.m2_solar:.2f} M☉ [Receding]\n"
+                f"NS1 (Cyan):  {self.config.m1_solar:.2f} M_sun [Approaching]\n"
+                f"NS2 (Gold):  {self.config.m2_solar:.2f} M_sun [Receding]\n"
                 f"--------------------\n"
                 f"TIDAL DEFORMABILITY\n"
-                f"Λ1 = {lam1_val:.0f} [ADOPTED MODEL]\n"
-                f"Λ2 = {lam2_val:.0f} [ADOPTED MODEL]\n"
-                f"Λ~ = {lam_tilde:.0f} (GW170817 <= 800)\n"
+                f"Lambda_1 = {lam1_val:.0f} [ADOPTED MODEL]\n"
+                f"Lambda_2 = {lam2_val:.0f} [ADOPTED MODEL]\n"
+                f"Lambda_tilde = {lam_tilde:.0f} (GW170817 <= 800)\n"
                 f"TIDAL RESPONSE = {resp_str}\n"
                 f"[REDUCED-ORDER TIDAL DEFORMABILITY MODEL]\n"
                 f"--------------------\n"
@@ -722,10 +724,10 @@ class ScientificDashboard:
         else:
             obj_type = "BLACK HOLE" if rem_st.is_black_hole else "HMNS REMNANT"
             d_m = evt_st.disk_mass_msun
-            d_m_str = f"{d_m:.2f} M☉" if d_m >= 0.01 else f"{d_m:.2e} M☉"
+            d_m_str = f"{d_m:.2f} M_sun" if d_m >= 0.01 else f"{d_m:.2e} M_sun"
             state_info = (
                 f"SYSTEM: {obj_type}\n"
-                f"M_rem:      {rem_st.mass / M_sun:.2f} M☉\n"
+                f"M_rem:      {rem_st.mass / M_sun:.2f} M_sun\n"
                 f"r_horizon:  {rem_st.radius / 1e3:.1f} km\n"
                 f"ACCRETION:  Active ({d_m_str})\n"
             )
@@ -780,17 +782,17 @@ class ScientificDashboard:
                 f"TRANSPORT:  {nu_trans_str}\n"
                 f"REMNANT:    {remnant_str}\n"
                 f"L_nu:       {nu_lum_erg:.1e} erg/s\n"
-                f"<E_nu>:     {evt_st.neutrino_mean_energy_mev:.1f} MeV\n"
+                f"<E_nu_e>:   {evt_st.neutrino_mean_energy_mev:.1f} MeV\n"
                 f"--------------------\n"
                 f"SPECIES [MODEL]:\n"
-                f" ve:      {nu_lum_nue_erg:.1e} erg/s (35%)\n"
-                f"          [Cyan]\n"
-                f" anti-ve: {nu_lum_nuebar_erg:.1e} erg/s (40%)\n"
-                f"          [Teal-White]\n"
-                f" vx:      {nu_lum_nux_erg:.1e} erg/s (25%)\n"
-                f"          [Violet]\n"
+                f" nu_e:     {nu_lum_nue_erg:.1e} erg/s (35%)\n"
+                f"           [Cyan]\n"
+                f" anti-nu_e:{nu_lum_nuebar_erg:.1e} erg/s (40%)\n"
+                f"           [Teal-White]\n"
+                f" nu_x:     {nu_lum_nux_erg:.1e} erg/s (25%)\n"
+                f"           [Violet]\n"
                 f"--------------------\n"
-                f"WIND Mdot:  {wind_mdot_msun_s:.2e} M☉/s\n"
+                f"WIND Mdot:  {wind_mdot_msun_s:.2e} M_sun/s\n"
                 f"--------------------\n"
                 f"REDUCED-ORDER NEUTRINO\n"
                 f"EMISSION / TRANSPORT MODEL\n"
@@ -807,12 +809,43 @@ class ScientificDashboard:
             gui.begin("GW Model Waveform Panel", 0.20, 0.87, 0.60, 0.11)
             wf_label = "MODEL GRAVITATIONAL-WAVE STRAIN  h(t)   |   Time-Domain Quadrupole Strain Model h+(t)"
             if self.view_mode == "GW":
-                wf_label = "GW MODE: MODEL GRAVITATIONAL-WAVE STRAIN h(t)  |  Quadrupole Wavefront Propagation"
+                wf_label = "GW MODE: MODEL GRAVITATIONAL-WAVE STRAIN h(t)  |  Quadrupole Wavefront Propagation (c_vis)"
             gui.text(f" {wf_label}")
             gui.end()
         else:
             gui.begin("Neutrino Transport Context", 0.25, 0.94, 0.50, 0.05)
             gui.text(" NEUTRINO TRANSPORT MODE  |  Outward Radially Expanding Tracers  [c]")
+            gui.end()
+
+        # 4c. SLOW-MOTION INDICATOR & CONTROLS OVERLAY (toggled by T)
+        if self.director.is_slow_motion and not self.show_controls_overlay:
+            gui.begin("Playback Mode", 0.81, 0.50, 0.18, 0.08)
+            gui.text(f"[*] SLOW MOTION\nSimulation {self.director.speed_multiplier:.2f}x")
+            gui.end()
+
+        if self.show_controls_overlay:
+            gui.begin("Simulation Controls", 0.81, 0.50, 0.18, 0.46)
+            if self.director.is_slow_motion:
+                gui.text(f"[*] SLOW MOTION\nSimulation {self.director.speed_multiplier:.2f}x\n--------------------")
+            gui.text(
+                "CONTROLS:\n"
+                " UP/DN/L/R  Camera Orbit\n"
+                " Mouse Drag Smooth Orbit\n"
+                " Wheel/+/-  Zoom In/Out\n"
+                " SPACE      Play / Pause\n"
+                " T          Slow Motion\n"
+                " C          CORE Mode\n"
+                " G          GW Mode\n"
+                " F          B-Field Mode\n"
+                " I          Neutrino Mode\n"
+                " U          Multi Mode\n"
+                " N / B      Next/Prev Stage\n"
+                " R          Reset Timeline\n"
+                " M          Audio Mute\n"
+                " ESC        Exit\n"
+                "--------------------\n"
+                " Press [T] to Toggle"
+            )
             gui.end()
 
     def get_lensing_sources(self):
@@ -922,7 +955,7 @@ class ScientificDashboard:
 
 
         # Render 3D Astronomical Starfield Particles into 3D Viewport (Background Layer)
-        star_radius = 2.2e3 if self.view_mode == "MAGNETIC FIELD" else (2.0e3 if self.view_mode == "NEUTRINO" else (2.8e3 if self.view_mode == "MULTI" else (2.2e3 if (rem_st.is_black_hole and self.view_mode == "CORE") else 3.8e3)))
+        star_radius = 1.6e3 if self.view_mode == "MAGNETIC FIELD" else (1.8e3 if self.view_mode in ["GW", "GW MODE"] else (2.0e3 if self.view_mode == "NEUTRINO" else (2.8e3 if self.view_mode == "MULTI" else (2.2e3 if (rem_st.is_black_hole and self.view_mode == "CORE") else 3.8e3))))
         self.renderer.update_star_brightness_mode(self.view_mode)
         self.scene.particles(
             self.renderer.star_deflected_pos,
@@ -1085,7 +1118,7 @@ class ScientificDashboard:
                 )
 
             if b_active and show_b_lines:
-                _b_scale = 0.50 if self.view_mode == "MULTI" else 1.00  # Subtle ~0.20 intensity in MULTI mode
+                _b_scale = 1.65 if self.view_mode == "MAGNETIC FIELD" else (0.50 if self.view_mode == "MULTI" else 1.00)
                 self.field_lines.update(
                     b_pol=evt_st.b_poloidal,
                     b_tor=evt_st.b_toroidal,
@@ -1128,7 +1161,7 @@ class ScientificDashboard:
                 n_b,
                 show_jet=show_jet_lines
             )
-            line_w = 1.0
+            line_w = 2.0 if self.view_mode == "MAGNETIC FIELD" else 1.0
             self.scene.lines(
                 self.renderer.combined_line_vertices,
                 width=line_w,
@@ -1137,7 +1170,7 @@ class ScientificDashboard:
 
         # 5. 3D GW Wavefront Propagation Lines
         if self.view_mode in ["GW", "GW MODE", "MULTI"]:
-            _gw_intensity = 0.30 if self.view_mode == "MULTI" else 1.00
+            _gw_intensity = 0.30 if self.view_mode == "MULTI" else 2.10
             wf_st = self.wave_propagation.update(
                 event_time=st.event_time,
                 f_gw=st.gw_frequency,
@@ -1161,7 +1194,7 @@ class ScientificDashboard:
 
         if wf_st.active and wf_st.n_vertices > 0:
             if self.view_mode in ["GW", "GW MODE"]:
-                lw = 4.5
+                lw = 1.4
             elif self.view_mode == "MULTI":
                 lw = 2.0  # Clean, restrained wavefront line width in MULTI
             else:
@@ -1176,10 +1209,12 @@ class ScientificDashboard:
 
         # Render single clean 2D model strain trace on canvas (suppressed in NEUTRINO mode)
         if self.renderer.waveform_vertices is not None and self.view_mode != "NEUTRINO":
+            wf_trace_w = 0.0042 if self.view_mode in ["GW", "GW MODE"] else 0.003
+            wf_trace_col = (1.0, 0.82, 0.22) if self.view_mode in ["GW", "GW MODE"] else (1.0, 0.75, 0.2)
             self.canvas.lines(
                 self.renderer.waveform_vertices,
-                width=0.003,
-                color=(1.0, 0.75, 0.2)  # Electric gold MODEL strain trace
+                width=wf_trace_w,
+                color=wf_trace_col  # Electric gold MODEL strain trace
             )
 
         self.render_gui_overlays()

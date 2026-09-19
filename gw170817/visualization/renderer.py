@@ -85,10 +85,14 @@ class ParticleRenderer:
         self.disk_radius_rel = ti.field(dtype=ti.f32, shape=self.n_disk_particles)
         self.disk_omega = ti.field(dtype=ti.f32, shape=self.n_disk_particles)
 
-        # 3D Neutrino Cooling Wind Halo Particles (400 particles)
-        self.n_nu_particles = 400
+        # 3D Neutrino Radiation Transport Tracers (600 particles: 35% nu_e, 40% anti-nu_e, 25% nu_x)
+        self.n_nu_particles = 600
         self.nu_pos = ti.Vector.field(3, dtype=ti.f32, shape=self.n_nu_particles)
         self.nu_colors = ti.Vector.field(3, dtype=ti.f32, shape=self.n_nu_particles)
+        self.nu_dir = ti.Vector.field(3, dtype=ti.f32, shape=self.n_nu_particles)
+        self.nu_phase = ti.field(dtype=ti.f32, shape=self.n_nu_particles)
+        self.nu_species = ti.field(dtype=ti.i32, shape=self.n_nu_particles)
+        self.nu_speed = ti.field(dtype=ti.f32, shape=self.n_nu_particles)
 
         # GPU-only granular ejecta samples.  These are deliberately separate
         # from the physical ParticleSystem resolution and are initialized once.
@@ -137,7 +141,7 @@ class ParticleRenderer:
         self._init_starfield(self.n_stars, seed=int(psys.config.seed))
         self._init_remnant_particles_kernel(self.n_remnant_particles)
         self._init_disk_particles_kernel(self.n_disk_particles)
-        self._init_nu_particles_kernel(self.n_nu_particles)
+        self._init_nu_particles(int(psys.config.seed))
         self._init_ejecta_fluid_kernel(self.n_ejecta_fluid_particles, int(psys.config.seed))
         self._init_ejecta_thermal_emission_kernel(self.n_ejecta_thermal_particles)
 
@@ -250,10 +254,12 @@ class ParticleRenderer:
         self._current_star_mode = view_mode
         mode_multipliers = {
             "CORE": 1.05,
-            "GW MODE": 0.75,
-            "MAGNETIC FIELD": 0.85,
+            "GW": 0.55,
+            "GW MODE": 0.55,
+            "MAGNETIC FIELD": 0.50,
             "BH LENS": 1.45,
             "MULTI": 1.00,
+            "NEUTRINO": 0.40,
         }
         scale = mode_multipliers.get(view_mode, 1.0)
         eff_colors = (self._star_base_colors_np * scale).astype(np.float32)
@@ -843,44 +849,112 @@ class ParticleRenderer:
             float(intensity_scale), float(remnant_mass_kg)
         )
 
-    @ti.kernel
-    def _init_nu_particles_kernel(self, n_nu: ti.i32):
+    def _init_nu_particles(self, seed: int):
         """
-        Seed subtle neutrino cooling wind halo particles around remnant/disk.
+        Deterministically initialize 600 neutrino radiation transport tracers:
+        - 210 nu_e (35%): Electric cyan / ice blue-white
+        - 240 anti-nu_e (40%): Warm white / gold
+        - 150 nu_x (25%): Neon violet / magenta
+        - Isotropic radial directions on the unit sphere
+        - Uniform radial phase distribution [0, 1)
         """
-        two_pi = 6.283185307179586
-        for i in range(n_nu):
-            u_r = ti.random(ti.f32)
-            u_th = ti.random(ti.f32)
-            u_ph = ti.random(ti.f32)
-            r = 20.0e3 + u_r * 180.0e3
-            th = ti.acos(1.0 - 2.0 * u_th)
-            ph = u_ph * two_pi
-            self.nu_pos[i] = ti.Vector([r * ti.sin(th) * ti.cos(ph), r * ti.sin(th) * ti.sin(ph), r * ti.cos(th)])
-            self.nu_colors[i] = ti.Vector([0.4, 0.2, 0.8])
+        species_np = np.zeros(self.n_nu_particles, dtype=np.int32)
+        species_np[0:210] = 0   # 35% nu_e
+        species_np[210:450] = 1 # 40% anti-nu_e
+        species_np[450:600] = 2 # 25% nu_x
+        self.nu_species.from_numpy(species_np)
+
+        speed_np = np.full(self.n_nu_particles, 2.998e8, dtype=np.float32)
+        self.nu_speed.from_numpy(speed_np)
+
+        phase_np = np.linspace(0.0, 1.0, self.n_nu_particles, endpoint=False, dtype=np.float32)
+        self.nu_phase.from_numpy(phase_np)
+
+        indices = np.arange(self.n_nu_particles, dtype=np.float32) + 0.5
+        phi_golden = np.pi * (1.0 + 5.0 ** 0.5)
+        theta_arr = np.arccos(1.0 - 2.0 * indices / self.n_nu_particles)
+        phi_arr = (indices * phi_golden) % (2.0 * np.pi)
+
+        dir_x = np.sin(theta_arr) * np.cos(phi_arr)
+        dir_y = np.sin(theta_arr) * np.sin(phi_arr)
+        dir_z = np.cos(theta_arr)
+        dir_np = np.column_stack([dir_x, dir_y, dir_z]).astype(np.float32)
+        self.nu_dir.from_numpy(dir_np)
+
+        init_pos_np = (dir_np * 16.0e3).astype(np.float32)
+        self.nu_pos.from_numpy(init_pos_np)
+        self.nu_colors.fill(0.0)
 
     @ti.kernel
     def update_nu_particles_kernel(
         self,
         event_time: ti.f32,
         pulse_wrapped: ti.f32,
-        nu_lum_norm: ti.f32
+        nu_lum_norm: ti.f32,
+        is_active: ti.i32
     ):
         """
-        Animate subtle neutrino wind halo cooling indicator around remnant/disk with wrapped phase.
+        Animate 3D outward-streaming neutrino radiation transport tracers on GPU.
+        - Radial transport: r(t) = r_min + (r_max - r_min) * u(t)^2.8
+        - Clearance: r >= 16.0 km (central remnant/BH shadow unobstructed)
+        - Density falloff: monotonic steep falloff (>50x from inner to outer boundary)
+        - Species colors:
+            Species 0 (nu_e): Electric cyan / ice blue-white [0.30, 0.85, 1.00]
+            Species 1 (anti-nu_e): Warm white / gold [0.90, 0.96, 0.70]
+            Species 2 (nu_x): Neon violet / magenta [0.85, 0.30, 0.95]
         """
-        for i in range(self.n_nu_particles):
-            if event_time < 0.0 or nu_lum_norm <= 0.0:
-                self.nu_colors[i] = ti.Vector([0.0, 0.0, 0.0])
-            else:
-                intensity = ti.min(0.6, 0.15 * nu_lum_norm * (1.0 + 0.3 * ti.sin(pulse_wrapped + float(i))))
-                self.nu_colors[i] = ti.Vector([0.3 * intensity, 0.15 * intensity, 0.6 * intensity])
+        r_min = 16.0e3
+        r_max = 260.0e3
+        delta_r = r_max - r_min
+        v_phase = 1.0  # Phase speed (1 cycle per second)
 
-    def update_nu_particles(self, event_time: float, nu_luminosity_w: float = 1.0e45):
-        """Update neutrino wind halo particles on GPU."""
+        for i in range(self.n_nu_particles):
+            if is_active == 0 or event_time < 0.0 or nu_lum_norm <= 0.0:
+                self.nu_colors[i] = ti.Vector([0.0, 0.0, 0.0])
+                self.nu_pos[i] = self.nu_dir[i] * r_min
+            else:
+                u = (self.nu_phase[i] + v_phase * event_time) % 1.0
+                r = r_min + delta_r * ti.pow(u, 2.8)
+                self.nu_pos[i] = self.nu_dir[i] * r
+
+                fade = 1.0 - 0.40 * u
+                lum_scale = ti.min(1.5, ti.max(0.4, nu_lum_norm))
+                brightness = lum_scale * fade
+
+                spec = self.nu_species[i]
+                if spec == 0:
+                    # nu_e: Electric cyan / ice blue-white
+                    self.nu_colors[i] = ti.Vector([
+                        0.30 * brightness,
+                        0.85 * brightness,
+                        1.00 * brightness
+                    ])
+                elif spec == 1:
+                    # anti-nu_e: Warm gold-white
+                    self.nu_colors[i] = ti.Vector([
+                        0.90 * brightness,
+                        0.96 * brightness,
+                        0.70 * brightness
+                    ])
+                else:
+                    # nu_x: Neon violet / magenta
+                    self.nu_colors[i] = ti.Vector([
+                        0.85 * brightness,
+                        0.30 * brightness,
+                        0.95 * brightness
+                    ])
+
+    def update_nu_particles(
+        self,
+        event_time: float,
+        nu_luminosity_w: float = 1.0e45,
+        is_active: bool = True
+    ):
+        """Update neutrino radiation transport particles on GPU."""
+        flag = 1 if is_active else 0
         norm = min(2.0, max(0.0, nu_luminosity_w / 1.0e45))
         pulse_wrapped = float((15.0 * event_time) % (2.0 * np.pi)) if event_time >= 0.0 else 0.0
-        self.update_nu_particles_kernel(float(event_time), pulse_wrapped, float(norm))
+        self.update_nu_particles_kernel(float(event_time), pulse_wrapped, float(norm), flag)
 
     @ti.kernel
     def update_ejecta_fluid_kernel(

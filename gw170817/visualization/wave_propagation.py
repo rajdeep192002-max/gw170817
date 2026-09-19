@@ -42,10 +42,10 @@ def _calc_shell_point(
 def _calc_vertex_color(q: ti.f32, col_intensity: ti.f32) -> ti.types.vector(3, ti.f32):
     """Calculate radiant electric blue/cyan RGB color for 3D GW wave shell vertices."""
     crest_pos = ti.max(0.0, q)
-    # Radiant electric cyan base [0.20, 0.70, 0.95] with brilliant white-cyan peaks [0.95, 1.00, 1.00]
-    c_r = (0.20 + 0.75 * crest_pos) * col_intensity
-    c_g = (0.70 + 0.30 * crest_pos) * col_intensity
-    c_b = (0.95 + 0.05 * crest_pos) * col_intensity
+    # Luminous electric cyan base [0.25, 0.80, 1.00] with brilliant white-cyan peaks [1.00, 1.00, 1.00]
+    c_r = (0.25 + 0.75 * crest_pos) * col_intensity
+    c_g = (0.80 + 0.20 * crest_pos) * col_intensity
+    c_b = 1.00 * col_intensity
     return ti.Vector([c_r, c_g, c_b])
 
 
@@ -150,8 +150,8 @@ class GWWavefrontPropagation:
                 fade_outer = ti.min(1.0, (r_max - r_shell) / 30.0e3)
                 shell_fade = ti.max(0.0, fade_inner * fade_outer)
 
-                # Brightness hierarchy: merger burst strongest (0.95-1.0), late inspiral moderate (0.6-0.75), early subtle (0.35)
-                col_intensity = ti.max(0.05, ti.min(1.0, shell_amp * amp_att * 2.2 * h_strain_norm * shell_fade * intensity_scale))
+                # Brightness hierarchy: boost intensity multiplier from 2.2 to 2.8 for vibrant, clear wavefront shells
+                col_intensity = ti.max(0.08, ti.min(1.0, shell_amp * amp_att * 2.8 * h_strain_norm * shell_fade * intensity_scale))
 
                 # Dynamic quadrupolar phase advances outward with radius
                 phase_shell = (r_shell / spacing) * two_pi
